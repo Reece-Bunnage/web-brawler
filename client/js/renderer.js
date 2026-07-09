@@ -179,6 +179,31 @@ export class Renderer {
   }
 }
 
+// Build a drawable state from two snapshots, lerping fighter positions by t
+// (0 → a, 1 → b). Discrete fields (percent, stocks, state) come from the newer
+// snapshot; only motion is smoothed (§11).
+export function interpolateSnapshots(a, b, t) {
+  const older = Object.fromEntries(a.fighters.map((f) => [f.id, f]));
+  const fighters = {};
+  for (const fb of b.fighters) {
+    const fa = older[fb.id] ?? fb;
+    fighters[fb.id] = {
+      ...fb,
+      x: fa.x + (fb.x - fa.x) * t,
+      y: fa.y + (fb.y - fa.y) * t,
+    };
+  }
+  return {
+    phase: b.phase,
+    countdownTimer: b.countdownTimer,
+    winnerId: b.winnerId,
+    tick: b.tick,
+    fighters,
+    hitboxes: b.hitboxes ?? [],
+    events: [],
+  };
+}
+
 function roundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
   ctx.roundRect(x, y, w, h, r);

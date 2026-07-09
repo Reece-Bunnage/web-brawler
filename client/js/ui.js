@@ -81,7 +81,7 @@ function describe(ch) {
   return 'Balanced all-rounder';
 }
 
-export function showResults({ standings, onRematch, onMenu }) {
+export function showResults({ standings, onRematch, onMenu, menuLabel = 'Main Menu' }) {
   const box = panel('RESULTS');
   const list = el('ol', 'standings');
   standings.forEach((entry) => {
@@ -96,7 +96,7 @@ export function showResults({ standings, onRematch, onMenu }) {
     rematch.onclick = onRematch;
     box.appendChild(rematch);
   }
-  const menu = el('button', 'btn', 'Main Menu');
+  const menu = el('button', 'btn', menuLabel);
   menu.onclick = onMenu;
   box.appendChild(menu);
 }
