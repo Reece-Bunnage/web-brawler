@@ -5,7 +5,8 @@
 
 import {
   GRAVITY, TERMINAL_VY, GROUND_ACCEL, GROUND_FRICTION, AIR_ACCEL, AIR_DRAG,
-  FLOOR, PLATFORMS, SPAWN_POINTS, STOCKS,
+  FLOOR, PLATFORMS, SPAWN_POINTS, STOCKS, BLAST, RESPAWN_POINT,
+  RESPAWN_IFRAMES, HITSTUN_PER_KNOCKBACK,
 } from './constants.js';
 import { CHARACTERS } from './characters.js';
 
@@ -16,6 +17,9 @@ export const EMPTY_INPUT = Object.freeze({
 
 // Frames of ignoring pass-through platforms after pressing down on one.
 const DROP_THROUGH_FRAMES = 10;
+
+// States in which the fighter is free to act (attack, move, jump).
+const NEUTRAL_STATES = new Set(['idle', 'run', 'air', 'respawning']);
 
 // --- State construction ---------------------------------------------------
 
@@ -28,6 +32,7 @@ export function createInitialState(fighterConfigs) {
   return {
     tick: 0,
     phase: 'playing',
+    winnerId: null,
     fighters,
     hitboxes: [],
     events: [],
@@ -43,7 +48,6 @@ function createFighter(cfg, spawn, index) {
     facing: index % 2 === 0 ? 1 : -1, // alternate spawns face inward-ish
     x: spawn.x,
     y: spawn.y - character.hurtbox.h / 2, // spawn.y is a feet position
-
     vx: 0,
     vy: 0,
     percent: 0,
@@ -53,6 +57,7 @@ function createFighter(cfg, spawn, index) {
     state: 'idle',
     stateTimer: 0,
     currentMove: null,
+    moveHits: [],      // fighter ids already hit by the current move activation
     invulnFrames: 0,
     shieldHealth: 100,
     dropThroughTimer: 0,
@@ -68,20 +73,44 @@ export function stepGame(state, inputs, dt) {
   next.tick += 1;
   next.events = [];
 
+  if (next.phase === 'ended') return next;
+
+  // Movement/state first for everyone, then hits are resolved against the
+  // post-move positions so simultaneous attacks are handled symmetrically.
   for (const fighter of Object.values(next.fighters)) {
     const input = inputs[fighter.id] || EMPTY_INPUT;
     stepFighter(next, fighter, input);
     fighter.prevInput = { ...input };
   }
 
+  next.hitboxes = buildHitboxes(next);
+  resolveHits(next);
+  checkBlastZones(next);
+  checkMatchEnd(next);
+
   return next;
 }
 
 function stepFighter(state, fighter, input) {
+  if (fighter.stocks <= 0) return; // eliminated
   const character = CHARACTERS[fighter.characterId];
 
   tickTimers(fighter);
-  applyMovementInput(fighter, character, input);
+  resolveExpiredState(fighter);
+
+  if (NEUTRAL_STATES.has(fighter.state)) {
+    if (!tryStartAttack(fighter, character, input)) {
+      applyMovementInput(fighter, character, input);
+    }
+  } else if (fighter.state === 'attack') {
+    if (fighter.onGround) {
+      fighter.vx *= GROUND_FRICTION; // ground attacks lock movement
+    } else {
+      applyAirDrift(fighter, character, input); // air attacks keep drift
+    }
+  }
+  // hitstun: no control at all — the launch trajectory plays out untouched.
+
   applyGravity(fighter);
   integratePosition(fighter);
   resolveStageCollision(fighter, character, input);
@@ -92,6 +121,183 @@ function tickTimers(fighter) {
   if (fighter.invulnFrames > 0) fighter.invulnFrames -= 1;
   if (fighter.dropThroughTimer > 0) fighter.dropThroughTimer -= 1;
   if (fighter.stateTimer > 0) fighter.stateTimer -= 1;
+}
+
+// When a timed state runs out, drop back to neutral; updateGroundedState
+// picks the right neutral flavor (idle/run/air) at the end of the step.
+function resolveExpiredState(fighter) {
+  if (fighter.stateTimer > 0) return;
+  if (fighter.state === 'attack' || fighter.state === 'hitstun') {
+    fighter.state = fighter.onGround ? 'idle' : 'air';
+    fighter.currentMove = null;
+    fighter.moveHits = [];
+  }
+}
+
+// --- Attacks ------------------------------------------------------------------
+
+function tryStartAttack(fighter, character, input) {
+  const prev = fighter.prevInput;
+  const strength = pressed(input, prev, 'light') ? 'light'
+    : pressed(input, prev, 'heavy') ? 'heavy' : null;
+  if (!strength) return false;
+
+  // Direction priority: up > down > side > neutral.
+  const dir = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+  let variant = 'Neutral';
+  if (input.up) variant = 'Up';
+  else if (input.down) variant = 'Down';
+  else if (dir !== 0) {
+    variant = 'Side';
+    fighter.facing = dir; // side attacks turn you before swinging
+  }
+
+  const moveKey = strength + variant;
+  const move = character.moves[moveKey];
+  if (!fighter.onGround && !move.canUseInAir) return false;
+
+  fighter.state = 'attack';
+  fighter.currentMove = moveKey;
+  fighter.stateTimer = move.startup + move.active + move.recovery;
+  fighter.moveHits = [];
+  return true;
+}
+
+function moveElapsedFrames(fighter, move) {
+  const total = move.startup + move.active + move.recovery;
+  return total - fighter.stateTimer;
+}
+
+function buildHitboxes(state) {
+  const hitboxes = [];
+  for (const fighter of Object.values(state.fighters)) {
+    if (fighter.state !== 'attack' || !fighter.currentMove) continue;
+    const move = CHARACTERS[fighter.characterId].moves[fighter.currentMove];
+    const elapsed = moveElapsedFrames(fighter, move);
+    if (elapsed < move.startup || elapsed >= move.startup + move.active) continue;
+
+    const hb = move.hitbox;
+    const centerX = fighter.x + hb.offsetX * fighter.facing;
+    const centerY = fighter.y + hb.offsetY;
+    hitboxes.push({
+      ownerId: fighter.id,
+      moveKey: fighter.currentMove,
+      x: centerX - hb.w / 2,
+      y: centerY - hb.h / 2,
+      w: hb.w,
+      h: hb.h,
+    });
+  }
+  return hitboxes;
+}
+
+function resolveHits(state) {
+  for (const hb of state.hitboxes) {
+    const attacker = state.fighters[hb.ownerId];
+    const move = CHARACTERS[attacker.characterId].moves[hb.moveKey];
+
+    for (const victim of Object.values(state.fighters)) {
+      if (victim.id === attacker.id) continue;
+      if (victim.stocks <= 0 || victim.state === 'ko') continue;
+      if (victim.invulnFrames > 0) continue;
+      if (attacker.moveHits.includes(victim.id)) continue; // once per activation
+
+      const ch = CHARACTERS[victim.characterId];
+      if (!aabbOverlap(hb, {
+        x: victim.x - ch.hurtbox.w / 2,
+        y: victim.y - ch.hurtbox.h / 2,
+        w: ch.hurtbox.w,
+        h: ch.hurtbox.h,
+      })) continue;
+
+      attacker.moveHits.push(victim.id);
+      applyHit(state, attacker, victim, move);
+    }
+  }
+}
+
+function applyHit(state, attacker, victim, move) {
+  const weight = CHARACTERS[victim.characterId].weight;
+
+  // Damage lands before knockback is computed, so the hit itself contributes
+  // to its own launch strength (§9 core Smash feel).
+  victim.percent += move.damage;
+  const knockback = (move.baseKnockback + victim.percent * move.knockbackScaling) / weight;
+
+  const rad = (move.angle * Math.PI) / 180;
+  victim.vx = Math.cos(rad) * knockback * attacker.facing;
+  victim.vy = -Math.sin(rad) * knockback; // negative = up
+  victim.onGround = false;
+
+  victim.state = 'hitstun';
+  victim.stateTimer = Math.max(1, Math.round(knockback * HITSTUN_PER_KNOCKBACK));
+  victim.currentMove = null;
+  victim.moveHits = [];
+
+  state.events.push({
+    type: 'hit',
+    attackerId: attacker.id,
+    victimId: victim.id,
+    damage: move.damage,
+    knockback,
+    x: victim.x,
+    y: victim.y,
+  });
+}
+
+// --- KO / stocks ---------------------------------------------------------------
+
+function checkBlastZones(state) {
+  for (const fighter of Object.values(state.fighters)) {
+    if (fighter.stocks <= 0) continue;
+    const out = fighter.x < BLAST.left || fighter.x > BLAST.right
+      || fighter.y < BLAST.top || fighter.y > BLAST.bottom;
+    if (!out) continue;
+
+    fighter.stocks -= 1;
+    state.events.push({ type: 'ko', id: fighter.id, x: fighter.x, y: fighter.y });
+
+    if (fighter.stocks > 0) {
+      respawn(fighter);
+    } else {
+      eliminate(fighter);
+    }
+  }
+}
+
+function respawn(fighter) {
+  const character = CHARACTERS[fighter.characterId];
+  fighter.x = RESPAWN_POINT.x;
+  fighter.y = RESPAWN_POINT.y - character.hurtbox.h / 2;
+  fighter.vx = 0;
+  fighter.vy = 0;
+  fighter.percent = 0;
+  fighter.onGround = false;
+  fighter.jumpsRemaining = character.airJumps;
+  fighter.state = 'respawning';
+  fighter.stateTimer = 0;
+  fighter.currentMove = null;
+  fighter.moveHits = [];
+  fighter.invulnFrames = RESPAWN_IFRAMES;
+  fighter.shieldHealth = 100;
+}
+
+function eliminate(fighter) {
+  fighter.state = 'ko';
+  fighter.vx = 0;
+  fighter.vy = 0;
+  fighter.currentMove = null;
+}
+
+function checkMatchEnd(state) {
+  const all = Object.values(state.fighters);
+  if (state.phase !== 'playing' || all.length < 2) return;
+  const alive = all.filter((f) => f.stocks > 0);
+  if (alive.length <= 1) {
+    state.phase = 'ended';
+    state.winnerId = alive[0]?.id ?? null;
+    state.events.push({ type: 'matchEnd', winnerId: state.winnerId });
+  }
 }
 
 // --- Movement ---------------------------------------------------------------
@@ -113,12 +319,7 @@ function applyMovementInput(fighter, character, input) {
       if (Math.abs(fighter.vx) < 0.05) fighter.vx = 0;
     }
   } else {
-    if (dir !== 0) {
-      fighter.vx += dir * AIR_ACCEL;
-      fighter.vx = clamp(fighter.vx, -character.moveSpeed, character.moveSpeed);
-    } else {
-      fighter.vx *= AIR_DRAG;
-    }
+    applyAirDrift(fighter, character, input);
   }
 
   if (pressed(input, fighter.prevInput, 'jump')) {
@@ -129,6 +330,16 @@ function applyMovementInput(fighter, character, input) {
   if (fighter.onGround && input.down && isOnPassThroughPlatform(fighter, character)) {
     fighter.dropThroughTimer = DROP_THROUGH_FRAMES;
     fighter.onGround = false;
+  }
+}
+
+function applyAirDrift(fighter, character, input) {
+  const dir = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+  if (dir !== 0) {
+    fighter.vx += dir * AIR_ACCEL;
+    fighter.vx = clamp(fighter.vx, -character.moveSpeed, character.moveSpeed);
+  } else {
+    fighter.vx *= AIR_DRAG;
   }
 }
 
@@ -210,6 +421,10 @@ function landOn(fighter, character, surfaceY) {
   fighter.vy = 0;
   fighter.onGround = true;
   fighter.jumpsRemaining = character.airJumps;
+  // Landing cancels hitstun — you've "teched" the launch by reaching ground.
+  if (fighter.state === 'hitstun' && fighter.stateTimer > 0) {
+    fighter.stateTimer = Math.min(fighter.stateTimer, 6);
+  }
 }
 
 function updateGroundedState(fighter, character) {
@@ -217,7 +432,7 @@ function updateGroundedState(fighter, character) {
   if (fighter.onGround && !isSupported(fighter, character)) {
     fighter.onGround = false;
   }
-  if (fighter.state === 'idle' || fighter.state === 'run' || fighter.state === 'air') {
+  if (NEUTRAL_STATES.has(fighter.state)) {
     fighter.state = !fighter.onGround ? 'air' : (Math.abs(fighter.vx) > 0.1 ? 'run' : 'idle');
   }
 }
@@ -229,6 +444,12 @@ function isSupported(fighter, character) {
     Math.abs(bottom - FLOOR.y) < 1 &&
     fighter.x + halfW > FLOOR.x && fighter.x - halfW < FLOOR.x + FLOOR.w;
   return onFloor || isOnPassThroughPlatform(fighter, character);
+}
+
+// --- Helpers -------------------------------------------------------------------
+
+function aabbOverlap(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
 function clamp(v, lo, hi) {
