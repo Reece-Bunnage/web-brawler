@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { createInitialState, stepGame, EMPTY_INPUT } from '../shared/simulation.js';
 import { CHARACTERS } from '../shared/characters.js';
-import { FLOOR, PLATFORMS, DT } from '../shared/constants.js';
+import { FLOOR, PLATFORMS, DT, COUNTDOWN_FRAMES, ENDED_LINGER_FRAMES } from '../shared/constants.js';
 
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
@@ -24,11 +24,18 @@ function bottom(fighter) {
   return fighter.y + CHARACTERS[fighter.characterId].hurtbox.h / 2;
 }
 
+// Movement/combat tests exercise the 'playing' phase directly.
+function skipCountdown(s) {
+  s.phase = 'playing';
+  s.countdownTimer = 0;
+  return s;
+}
+
 function newState(charA = 'ranger', charB = 'titan') {
-  return createInitialState([
+  return skipCountdown(createInitialState([
     { id: 'p1', characterId: charA },
     { id: 'p2', characterId: charB },
-  ]);
+  ]));
 }
 
 // --- Movement & platforms (Phase 2) ---------------------------------------
@@ -79,7 +86,7 @@ test('jump rises and lands back on the floor', () => {
 
 test('air jumps: ranger gets 1, sprite gets 2, then no more', () => {
   for (const [charId, airJumps] of [['ranger', 1], ['sprite', 2]]) {
-    let s = createInitialState([{ id: 'p1', characterId: charId }]);
+    let s = skipCountdown(createInitialState([{ id: 'p1', characterId: charId }]));
     s = run(s, 10);
     // Ground jump.
     s = run(s, 1, () => ({ p1: input({ jump: true }) }));
@@ -99,7 +106,7 @@ test('air jumps: ranger gets 1, sprite gets 2, then no more', () => {
 
 test('double jump reaches a platform and lands on top of it', () => {
   const plat = PLATFORMS[0];
-  let s = createInitialState([{ id: 'p1', characterId: 'ranger' }]);
+  let s = skipCountdown(createInitialState([{ id: 'p1', characterId: 'ranger' }]));
   s.fighters.p1.x = plat.x + plat.w / 2; // directly under the platform
   s = run(s, 10);
   s = run(s, 1, () => ({ p1: input({ jump: true }) }));
@@ -116,7 +123,7 @@ test('double jump reaches a platform and lands on top of it', () => {
 
 test('holding down drops through a platform onto the floor', () => {
   const plat = PLATFORMS[0];
-  let s = createInitialState([{ id: 'p1', characterId: 'ranger' }]);
+  let s = skipCountdown(createInitialState([{ id: 'p1', characterId: 'ranger' }]));
   const f = s.fighters.p1;
   f.x = plat.x + plat.w / 2;
   f.y = plat.y - CHARACTERS.ranger.hurtbox.h / 2 - 5;
@@ -361,6 +368,47 @@ test('air dodge only once per airtime, restored on landing', () => {
   s = run(s, 200);
   assert.equal(s.fighters.p1.onGround, true);
   assert.equal(s.fighters.p1.airDodgeUsed, false);
+});
+
+// --- Match flow (Phase 8) ------------------------------------------------------
+
+test('match starts in countdown, ignores inputs, then goes to playing', () => {
+  let s = createInitialState([
+    { id: 'p1', characterId: 'ranger' },
+    { id: 'p2', characterId: 'titan' },
+  ]);
+  assert.equal(s.phase, 'countdown');
+  const x0 = s.fighters.p1.x;
+  s = run(s, 30, () => ({ p1: input({ right: true, jump: true }) }));
+  assert.equal(s.phase, 'countdown');
+  assert.equal(s.fighters.p1.x, x0, 'frozen during countdown');
+  s = run(s, COUNTDOWN_FRAMES, () => ({ p1: input({ right: true }) }));
+  assert.equal(s.phase, 'playing');
+  s = run(s, 10, () => ({ p1: input({ right: true }) }));
+  assert.ok(s.fighters.p1.x > x0, 'moving once playing');
+});
+
+test('buttons held through the countdown do not edge-trigger at match start', () => {
+  let s = createInitialState([
+    { id: 'p1', characterId: 'ranger' },
+    { id: 'p2', characterId: 'titan' },
+  ]);
+  s = run(s, COUNTDOWN_FRAMES + 5, () => ({ p1: input({ light: true }) }));
+  assert.equal(s.phase, 'playing');
+  assert.notEqual(s.fighters.p1.state, 'attack', 'held light did not fire');
+});
+
+test('ended phase lingers, then freezes with a winner', () => {
+  let s = combatState();
+  s.fighters.p2.stocks = 1;
+  s.fighters.p2.x = 1600;
+  s.fighters.p2.onGround = false;
+  s = stepGame(s, {}, DT);
+  assert.equal(s.phase, 'ended');
+  assert.ok(s.endTimer > 0, 'linger timer set');
+  s = run(s, ENDED_LINGER_FRAMES + 5);
+  assert.equal(s.endTimer, 0);
+  assert.equal(s.winnerId, 'p1');
 });
 
 // --- Runner -----------------------------------------------------------------

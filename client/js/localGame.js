@@ -51,7 +51,7 @@ export class LocalGame {
 
     this.renderer.draw(this.state);
 
-    if (this.state.phase === 'ended') {
+    if (this.state.phase === 'ended' && this.state.endTimer <= 0) {
       this.running = false;
       this.onMatchEnd?.(this.state);
       return;

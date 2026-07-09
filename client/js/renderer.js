@@ -32,6 +32,7 @@ export class Renderer {
     if (this.debug) this.drawDebug(state);
     this.drawHUD(state);
     if (state.phase === 'countdown') this.drawCountdown(state);
+    if (state.phase === 'ended') this.drawWinner(state);
   }
 
   drawStage() {
@@ -152,6 +153,16 @@ export class Renderer {
         ctx.fill();
       }
     });
+  }
+
+  drawWinner(state) {
+    const { ctx } = this;
+    const winner = state.winnerId ? state.fighters[state.winnerId] : null;
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 72px system-ui';
+    ctx.textAlign = 'center';
+    ctx.fillText(winner ? `${winner.name} WINS!` : 'DRAW!', STAGE.width / 2, STAGE.height / 2 - 60);
+    ctx.textAlign = 'left';
   }
 
   drawCountdown(state) {

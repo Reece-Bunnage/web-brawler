@@ -10,6 +10,7 @@ import {
   SHIELD_MAX, SHIELD_REGEN, SHIELD_DRAIN_HELD, SHIELD_BREAK_STUN,
   DODGE_IFRAMES, ROLL_IFRAMES, ROLL_SPEED, ROLL_DURATION,
   SPOT_DODGE_DURATION, AIR_DODGE_DURATION, AIR_DODGE_BURST,
+  COUNTDOWN_FRAMES, ENDED_LINGER_FRAMES,
 } from './constants.js';
 import { CHARACTERS } from './characters.js';
 
@@ -34,7 +35,9 @@ export function createInitialState(fighterConfigs) {
   });
   return {
     tick: 0,
-    phase: 'playing',
+    phase: 'countdown',
+    countdownTimer: COUNTDOWN_FRAMES,
+    endTimer: 0,
     winnerId: null,
     fighters,
     hitboxes: [],
@@ -77,7 +80,31 @@ export function stepGame(state, inputs, dt) {
   next.tick += 1;
   next.events = [];
 
-  if (next.phase === 'ended') return next;
+  if (next.phase === 'countdown') {
+    next.countdownTimer -= 1;
+    // Inputs are ignored but tracked, so buttons held through the countdown
+    // don't edge-trigger the moment the match starts.
+    for (const fighter of Object.values(next.fighters)) {
+      fighter.prevInput = { ...(inputs[fighter.id] || EMPTY_INPUT) };
+    }
+    if (next.countdownTimer <= 0) {
+      next.phase = 'playing';
+      next.events.push({ type: 'matchStart' });
+    }
+    return next;
+  }
+
+  if (next.phase === 'ended') {
+    // Linger so the final KO plays out on screen before results.
+    if (next.endTimer > 0) {
+      next.endTimer -= 1;
+      for (const fighter of Object.values(next.fighters)) {
+        stepFighter(next, fighter, EMPTY_INPUT);
+      }
+      next.hitboxes = [];
+    }
+    return next;
+  }
 
   // Movement/state first for everyone, then hits are resolved against the
   // post-move positions so simultaneous attacks are handled symmetrically.
@@ -395,6 +422,7 @@ function checkMatchEnd(state) {
   const alive = all.filter((f) => f.stocks > 0);
   if (alive.length <= 1) {
     state.phase = 'ended';
+    state.endTimer = ENDED_LINGER_FRAMES;
     state.winnerId = alive[0]?.id ?? null;
     state.events.push({ type: 'matchEnd', winnerId: state.winnerId });
   }

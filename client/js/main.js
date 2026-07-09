@@ -56,7 +56,7 @@ function showLocalResults(state, characterIds) {
   const standings = fighters
     .slice()
     .sort((a, b) => b.stocks - a.stocks || a.percent - b.percent)
-    .map((f, i) => ({ name: f.name, characterId: f.characterId, winner: i === 0 }));
+    .map((f) => ({ name: f.name, characterId: f.characterId, winner: f.id === state.winnerId }));
   ui.showResults({
     standings,
     onRematch: () => startLocalMatch(characterIds),
