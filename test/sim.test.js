@@ -286,6 +286,83 @@ test('last fighter standing ends the match', () => {
   assert.equal(s.winnerId, 'p1');
 });
 
+// --- Shield & dodge (Phase 7) ------------------------------------------------
+
+test('shield blocks damage and knockback, draining by the hit damage', () => {
+  let s = combatState();
+  s = run(s, 2, () => ({ p2: input({ shield: true }) }));
+  assert.equal(s.fighters.p2.state, 'shield');
+  const shieldBefore = s.fighters.p2.shieldHealth;
+  s = run(s, 1, () => ({ p1: input({ light: true, right: true }), p2: input({ shield: true }) }));
+  s = run(s, 10, () => ({ p2: input({ shield: true }) }));
+  assert.equal(s.fighters.p2.percent, 0, 'no damage through shield');
+  assert.notEqual(s.fighters.p2.state, 'hitstun');
+  const move = CHARACTERS.ranger.moves.lightSide;
+  assert.ok(shieldBefore - s.fighters.p2.shieldHealth >= move.damage,
+    `shield drained ${shieldBefore - s.fighters.p2.shieldHealth}`);
+});
+
+test('shield drains while held and regenerates when released', () => {
+  let s = combatState();
+  s = run(s, 60, () => ({ p2: input({ shield: true }) }));
+  const drained = s.fighters.p2.shieldHealth;
+  assert.ok(drained < 100, 'drained while held');
+  s = run(s, 60);
+  assert.ok(s.fighters.p2.shieldHealth > drained, 'regenerated after release');
+});
+
+test('an emptied shield causes a long break stun', () => {
+  let s = combatState();
+  s.fighters.p2.shieldHealth = 3;
+  s = run(s, 2, () => ({ p2: input({ shield: true }) }));
+  s = run(s, 1, () => ({ p1: input({ light: true, right: true }), p2: input({ shield: true }) }));
+  s = run(s, 10, () => ({ p2: input({ shield: true }) }));
+  assert.equal(s.fighters.p2.state, 'hitstun');
+  assert.ok(s.fighters.p2.stateTimer > 60, `break stun ${s.fighters.p2.stateTimer} frames`);
+});
+
+test('spot dodge i-frames avoid a hit', () => {
+  let s = combatState();
+  // p1 starts a light attack; p2 dodges just before it becomes active.
+  s = run(s, 1, () => ({ p1: input({ light: true, right: true }), p2: input({ dodge: true }) }));
+  assert.equal(s.fighters.p2.state, 'dodge');
+  assert.ok(s.fighters.p2.invulnFrames > 0);
+  s = run(s, 12);
+  assert.equal(s.fighters.p2.percent, 0, 'hit passed through during i-frames');
+});
+
+test('roll travels and dodge states expire back to neutral', () => {
+  let s = combatState();
+  const x0 = s.fighters.p2.x;
+  s = run(s, 1, () => ({ p2: input({ dodge: true, left: true }) }));
+  assert.equal(s.fighters.p2.state, 'dodge');
+  s = run(s, 40);
+  assert.ok(s.fighters.p2.x < x0 - 40, `rolled ${x0 - s.fighters.p2.x}px`);
+  assert.ok(['idle', 'run'].includes(s.fighters.p2.state), 'back to neutral');
+  assert.equal(s.fighters.p2.invulnFrames, 0, 'no lingering invulnerability');
+});
+
+test('air dodge only once per airtime, restored on landing', () => {
+  let s = combatState();
+  // Start high in the air so the whole dodge plays out before landing.
+  s.fighters.p1.y = 150;
+  s.fighters.p1.onGround = false;
+  s.fighters.p1.state = 'air';
+  s = run(s, 1, () => ({ p1: input({ dodge: true, up: true }) }));
+  assert.equal(s.fighters.p1.state, 'dodge');
+  assert.equal(s.fighters.p1.airDodgeUsed, true);
+  // Wait out the dodge; still airborne, a second press must be refused.
+  s = run(s, 30);
+  assert.equal(s.fighters.p1.onGround, false, 'still airborne after dodge');
+  assert.equal(s.fighters.p1.state, 'air');
+  s = run(s, 1, () => ({ p1: input({ dodge: true }) }));
+  assert.notEqual(s.fighters.p1.state, 'dodge', 'second air dodge refused');
+  // Land, then air dodge must be available again.
+  s = run(s, 200);
+  assert.equal(s.fighters.p1.onGround, true);
+  assert.equal(s.fighters.p1.airDodgeUsed, false);
+});
+
 // --- Runner -----------------------------------------------------------------
 
 let failed = 0;

@@ -7,6 +7,9 @@ import {
   GRAVITY, TERMINAL_VY, GROUND_ACCEL, GROUND_FRICTION, AIR_ACCEL, AIR_DRAG,
   FLOOR, PLATFORMS, SPAWN_POINTS, STOCKS, BLAST, RESPAWN_POINT,
   RESPAWN_IFRAMES, HITSTUN_PER_KNOCKBACK,
+  SHIELD_MAX, SHIELD_REGEN, SHIELD_DRAIN_HELD, SHIELD_BREAK_STUN,
+  DODGE_IFRAMES, ROLL_IFRAMES, ROLL_SPEED, ROLL_DURATION,
+  SPOT_DODGE_DURATION, AIR_DODGE_DURATION, AIR_DODGE_BURST,
 } from './constants.js';
 import { CHARACTERS } from './characters.js';
 
@@ -59,7 +62,8 @@ function createFighter(cfg, spawn, index) {
     currentMove: null,
     moveHits: [],      // fighter ids already hit by the current move activation
     invulnFrames: 0,
-    shieldHealth: 100,
+    shieldHealth: SHIELD_MAX,
+    airDodgeUsed: false,
     dropThroughTimer: 0,
     prevInput: { ...EMPTY_INPUT }, // sim-side edge detection (§6)
   };
@@ -98,8 +102,12 @@ function stepFighter(state, fighter, input) {
   tickTimers(fighter);
   resolveExpiredState(fighter);
 
+  regenShield(fighter);
+
   if (NEUTRAL_STATES.has(fighter.state)) {
-    if (!tryStartAttack(fighter, character, input)) {
+    if (!tryStartDodge(fighter, input)
+      && !tryStartShield(fighter, input)
+      && !tryStartAttack(fighter, character, input)) {
       applyMovementInput(fighter, character, input);
     }
   } else if (fighter.state === 'attack') {
@@ -108,8 +116,11 @@ function stepFighter(state, fighter, input) {
     } else {
       applyAirDrift(fighter, character, input); // air attacks keep drift
     }
+  } else if (fighter.state === 'shield') {
+    stepShield(fighter, input);
   }
   // hitstun: no control at all — the launch trajectory plays out untouched.
+  // dodge: committed — rolls keep their velocity, spot/air dodges ride physics.
 
   applyGravity(fighter);
   integratePosition(fighter);
@@ -127,11 +138,78 @@ function tickTimers(fighter) {
 // picks the right neutral flavor (idle/run/air) at the end of the step.
 function resolveExpiredState(fighter) {
   if (fighter.stateTimer > 0) return;
-  if (fighter.state === 'attack' || fighter.state === 'hitstun') {
+  if (fighter.state === 'attack' || fighter.state === 'hitstun' || fighter.state === 'dodge') {
     fighter.state = fighter.onGround ? 'idle' : 'air';
     fighter.currentMove = null;
     fighter.moveHits = [];
   }
+}
+
+// --- Shield & dodge -------------------------------------------------------
+
+function regenShield(fighter) {
+  if (fighter.state !== 'shield') {
+    fighter.shieldHealth = Math.min(SHIELD_MAX, fighter.shieldHealth + SHIELD_REGEN);
+  }
+}
+
+function tryStartShield(fighter, input) {
+  // Ground-only: in the air the defensive option is the air dodge.
+  if (!input.shield || !fighter.onGround || fighter.shieldHealth <= 0) return false;
+  fighter.state = 'shield';
+  fighter.stateTimer = 0; // held state, no fixed duration
+  return true;
+}
+
+function stepShield(fighter, input) {
+  fighter.vx *= GROUND_FRICTION; // movement locked while shielding
+  fighter.shieldHealth -= SHIELD_DRAIN_HELD;
+  if (fighter.shieldHealth <= 0) {
+    breakShield(fighter);
+    return;
+  }
+  if (!input.shield) {
+    fighter.state = 'idle';
+  }
+}
+
+function breakShield(fighter) {
+  fighter.shieldHealth = 0;
+  // Break stun reuses hitstun: no control, long enough to be heavily punished.
+  fighter.state = 'hitstun';
+  fighter.stateTimer = SHIELD_BREAK_STUN;
+}
+
+function tryStartDodge(fighter, input) {
+  if (!pressed(input, fighter.prevInput, 'dodge')) return false;
+  const dir = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+
+  if (!fighter.onGround) {
+    if (fighter.airDodgeUsed) return false; // once per airtime
+    fighter.airDodgeUsed = true;
+    fighter.state = 'dodge';
+    fighter.stateTimer = AIR_DODGE_DURATION;
+    fighter.invulnFrames = DODGE_IFRAMES;
+    // Small directional burst; gravity still applies over the dodge.
+    fighter.vx = dir * AIR_DODGE_BURST;
+    fighter.vy = ((input.down ? 1 : 0) - (input.up ? 1 : 0)) * AIR_DODGE_BURST;
+    return true;
+  }
+
+  if (dir !== 0) {
+    // Roll: travel with i-frames, facing preserved.
+    fighter.state = 'dodge';
+    fighter.stateTimer = ROLL_DURATION;
+    fighter.invulnFrames = ROLL_IFRAMES;
+    fighter.vx = dir * ROLL_SPEED;
+  } else {
+    // Spot dodge: i-frames in place.
+    fighter.state = 'dodge';
+    fighter.stateTimer = SPOT_DODGE_DURATION;
+    fighter.invulnFrames = DODGE_IFRAMES;
+    fighter.vx = 0;
+  }
+  return true;
 }
 
 // --- Attacks ------------------------------------------------------------------
@@ -211,8 +289,29 @@ function resolveHits(state) {
       })) continue;
 
       attacker.moveHits.push(victim.id);
-      applyHit(state, attacker, victim, move);
+      if (victim.state === 'shield') {
+        applyShieldedHit(state, attacker, victim, move);
+      } else {
+        applyHit(state, attacker, victim, move);
+      }
     }
+  }
+}
+
+// A blocked hit deals no damage/knockback; it drains shield by the hit's
+// damage instead, and an emptied shield means break stun (§9).
+function applyShieldedHit(state, attacker, victim, move) {
+  victim.shieldHealth -= move.damage;
+  state.events.push({
+    type: 'shieldHit',
+    attackerId: attacker.id,
+    victimId: victim.id,
+    x: victim.x,
+    y: victim.y,
+  });
+  if (victim.shieldHealth <= 0) {
+    breakShield(victim);
+    state.events.push({ type: 'shieldBreak', id: victim.id });
   }
 }
 
@@ -279,7 +378,8 @@ function respawn(fighter) {
   fighter.currentMove = null;
   fighter.moveHits = [];
   fighter.invulnFrames = RESPAWN_IFRAMES;
-  fighter.shieldHealth = 100;
+  fighter.shieldHealth = SHIELD_MAX;
+  fighter.airDodgeUsed = false;
 }
 
 function eliminate(fighter) {
@@ -421,6 +521,7 @@ function landOn(fighter, character, surfaceY) {
   fighter.vy = 0;
   fighter.onGround = true;
   fighter.jumpsRemaining = character.airJumps;
+  fighter.airDodgeUsed = false;
   // Landing cancels hitstun — you've "teched" the launch by reaching ground.
   if (fighter.state === 'hitstun' && fighter.stateTimer > 0) {
     fighter.stateTimer = Math.min(fighter.stateTimer, 6);
