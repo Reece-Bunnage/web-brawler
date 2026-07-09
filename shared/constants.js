@@ -25,11 +25,13 @@ export const PLATFORMS = [
   { x: 280, y: 440, w: 220, h: 12 },
   { x: 780, y: 440, w: 220, h: 12 },
 ];
+// Spawn/respawn coords are FEET positions (y = where the hurtbox bottom goes),
+// so characters of any height spawn standing on, not inside, the surface.
 export const SPAWN_POINTS = [
-  { x: 340, y: 560 },
-  { x: 940, y: 560 },
-  { x: 540, y: 560 },
-  { x: 740, y: 560 },
+  { x: 340, y: 600 },
+  { x: 940, y: 600 },
+  { x: 540, y: 600 },
+  { x: 740, y: 600 },
 ];
 export const RESPAWN_POINT = { x: 640, y: 300 };
 
