@@ -119,7 +119,13 @@ export class Room {
     if (this.hostId === id) {
       this.hostId = this.players.keys().next().value ?? null; // promote next joiner
     }
-    this.game?.removePlayer(id);
+    if (this.players.size === 0 && this.game) {
+      // Everyone left mid-match: stop the loop instead of simulating for nobody.
+      this.game.stop();
+      this.game = null;
+    } else {
+      this.game?.removePlayer(id);
+    }
     this.broadcastLobby();
   }
 

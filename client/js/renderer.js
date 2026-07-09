@@ -63,6 +63,18 @@ export class Renderer {
     if (flashing) this.flashes.set(fighter.id, this.flashes.get(fighter.id) - 1);
     const blinking = fighter.invulnFrames > 0 && Math.floor(fighter.invulnFrames / 4) % 2 === 0;
 
+    // Respawn effect: a glowing disc under freshly-respawned fighters (their
+    // long invulnerability window distinguishes them from short dodge blinks).
+    if (fighter.invulnFrames > 30) {
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, fighter.invulnFrames / 60) * 0.6;
+      ctx.fillStyle = '#9db4ff';
+      ctx.beginPath();
+      ctx.ellipse(fighter.x, top + h + 6, w * 0.9, 7, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
     ctx.save();
     if (blinking) ctx.globalAlpha = 0.45;
 
