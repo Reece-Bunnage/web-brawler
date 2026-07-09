@@ -1,0 +1,14 @@
+{
+  "name": "web-brawler",
+  "version": "1.0.0",
+  "description": "2-4 player Smash-style platform brawler for the browser",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/sim.test.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
