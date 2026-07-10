@@ -35,6 +35,22 @@ on the host machine.
 en0` (macOS), `hostname -I` (Linux), or `ipconfig` (Windows). Use `PORT=8080
 npm start` to pick a different port.
 
+### Smooth LAN play
+
+If online play looks choppy, press **F2** in-game for the net overlay — it
+tells you whether the problem is the network or the machine:
+
+- high `gap p90` with good `fps` → the network. Put the **host on ethernet**;
+  laptop Wi-Fi power saving adds 50–300 ms bursts.
+- low `gap` but low `fps` → the client machine. Close duplicate tabs (every
+  open tab renders its own copy) and don't host + play in a browser on an
+  underpowered machine.
+- Keep the host awake: on macOS run the server with `caffeinate -dims npm
+  start` so the OS never throttles it.
+
+Healthy numbers on a LAN: ~60 snap/s, p90 gap under ~25 ms, interp 33–50 ms,
+pred err a few px.
+
 **Playing over the internet:** either forward the port on your router
 (NAT/port-forwarding to the host machine), or use a tunnel such as
 [ngrok](https://ngrok.com) (`ngrok http 3000`) and share the URL it prints.
@@ -58,15 +74,18 @@ share the address with people you trust, and stop the server when you're done.
 |---|---|---|
 | Move | A / D | ← / → |
 | Aim up / down | W / S | ↑ / ↓ |
-| Jump / double jump | Space | Enter |
+| Jump / double jump | W or Space | ↑ |
 | Punch / fire | F | . (period) |
+| Dash | Left Shift | / (slash) |
+| Throw held gun | Q | , (comma) |
 | Drop through platform | S (on a platform) | ↓ (on a platform) |
 
 Aim is 8-way from held direction keys; with nothing held you aim where you
 face.
 
-**Online:** move with A/D, jump with Space, drop with S — and **aim with the
-mouse, click to fire** (F also works).
+**Online:** move with A/D, jump with W or Space, drop with S — and **aim with
+the mouse, click to fire** (F also works). Your own fighter is client-side
+predicted, so movement feels instant even though the server is authoritative.
 
 - Unarmed you punch; with a gun you shoot. Uzis spray while held, everything
   else fires per click/press.

@@ -86,6 +86,8 @@ export class AudioManager {
       case 'bombArm': this._bombPass(); break;
       case 'bombPass': this._bombPass(); break;
       case 'bombExplode': this._explosion({ radius: 90 }); break;
+      case 'saberSwing': this._saberSwing(); break;
+      case 'saberClash': this._saberClash(); break;
       case 'roundStart': this._go(); break;
       case 'roundEnd': this._roundEnd(); break;
       case 'matchEnd': this._matchEnd(); break;
@@ -189,6 +191,19 @@ export class AudioManager {
     // Ominous low blip — the bomb changed hands (or just armed).
     this._tone({ freq: 220, freqEnd: 140, type: 'sawtooth', decay: 0.12, gain: 0.24 });
     this._tone({ freq: 660, type: 'square', decay: 0.05, gain: 0.14 });
+  }
+
+  _saberSwing() {
+    // Rising whoosh with a faint harmonic hum under it.
+    this._noise({ duration: 0.14, type: 'bandpass', freq: 320, freqEnd: 1300, q: 2.5, gain: 0.3 });
+    this._tone({ freq: 110, freqEnd: 170, type: 'sawtooth', decay: 0.12, gain: 0.1 });
+  }
+
+  _saberClash() {
+    // Electric crack: bright zap, sizzle, and a low body thump.
+    this._tone({ freq: 1400, freqEnd: 200, type: 'sawtooth', decay: 0.22, gain: 0.32 });
+    this._noise({ duration: 0.18, type: 'highpass', freq: 2800, gain: 0.3 });
+    this._tone({ freq: 95, freqEnd: 50, type: 'sine', decay: 0.25, gain: 0.3 });
   }
 
   _go() {

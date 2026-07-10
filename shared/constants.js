@@ -2,8 +2,21 @@
 // unless noted. All values are starting points — tune by feel.
 
 export const TICK_RATE = 60;              // sim steps per second
-export const SNAPSHOT_RATE = 30;          // server broadcasts per second
+// One snapshot per tick: smoothest motion, ~2-4 Mbit/s total JSON on a full
+// room — trivial for LAN. WAN play would want delta compression before this.
+export const SNAPSHOT_RATE = 60;          // server broadcasts per second
 export const DT = 1 / TICK_RATE;
+
+// Online interpolation: the client renders this far in the past, adapting to
+// measured snapshot arrival jitter (delay = GAP_MULT × p90 gap, clamped).
+export const INTERP_MIN_MS = 33;          // floor: 2 snapshot intervals @60Hz
+export const INTERP_MAX_MS = 120;         // ceiling under heavy jitter
+export const INTERP_GAP_MULT = 2;
+
+// Client-side prediction (own fighter online).
+export const PREDICTION_SNAP_DIST = 80;      // divergence px that snaps instead of smoothing
+export const PREDICTION_ERROR_DECAY = 0.85;  // per-frame decay of the render-error offset
+export const PENDING_INPUT_MAX = 120;        // ~2s of unacked inputs kept for replay
 
 // Physics
 export const GRAVITY = 0.6;               // px/frame^2

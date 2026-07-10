@@ -41,10 +41,15 @@ const httpServer = http.createServer(async (req, res) => {
   }
 });
 
-const wss = new WebSocketServer({ server: httpServer });
+// Compression is off (it defaults off, pinned here on purpose): it adds
+// latency jitter, and the 60Hz snapshot stream is tiny anyway.
+const wss = new WebSocketServer({ server: httpServer, perMessageDeflate: false });
 const room = new Room();
 
 wss.on('connection', (socket, req) => {
+  // Nagle + delayed ACK batches small frequent messages into bursts — on a
+  // LAN that turns the steady snapshot stream into visible chop. Send at once.
+  req.socket.setNoDelay(true);
   console.log(`[ws] connection from ${req.socket.remoteAddress}`);
   room.addConnection(socket);
 });

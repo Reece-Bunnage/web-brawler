@@ -4,22 +4,24 @@
 
 import { MSG, encode, decode, join, ready, setMode, startMatch, inputMsg }
   from '/shared/protocol.js';
-import { SNAPSHOT_RATE, TICK_RATE } from '/shared/constants.js';
+import { SNAPSHOT_RATE, TICK_RATE, INTERP_MIN_MS, INTERP_MAX_MS, INTERP_GAP_MULT }
+  from '/shared/constants.js';
 
-const INPUT_SEND_MS = 1000 / 30;
-// Render this far in the past so there are always two snapshots to
-// interpolate between (~3 snapshot intervals at 30 Hz ≈ 100 ms, §11).
+// Seed for the adaptive interpolation delay before any gaps are measured
+// (also the behavior of old builds: render a fixed 100 ms in the past).
 export const INTERP_DELAY_MS = 100;
-const SNAPSHOT_BUFFER_MAX = 30;
+const SNAPSHOT_BUFFER_MAX = 60;
+const GAP_WINDOW = 32;        // inter-arrival gaps kept for the p90 estimate
+const GAP_CLAMP_MS = 250;     // one-off stalls don't poison the window
 
 export class NetClient {
   constructor() {
     this.ws = null;
     this.yourId = null;
-    this.seq = 0;
-    this.lastSentInput = null;
-    this.lastSendTime = 0;
     this.snapshots = []; // [{ recvTime, tick, phase, fighters, ... }]
+    this.interpDelay = INTERP_DELAY_MS; // adapts to measured snapshot jitter
+    this._gaps = [];
+    this._lastSnapTime = null;
     // Callbacks assigned by main.js.
     this.onLobby = null;
     this.onMatchStart = null;
@@ -51,14 +53,27 @@ export class NetClient {
         break;
       case MSG.MATCH_START:
         this.snapshots = [];
-        this.seq = 0;
-        this.lastSentInput = null;
+        this._gaps = [];
+        this._lastSnapTime = null;
+        this.interpDelay = INTERP_DELAY_MS;
         this.onMatchStart?.(msg);
         break;
-      case MSG.SNAPSHOT:
-        this.snapshots.push({ ...msg, recvTime: performance.now() });
+      case MSG.SNAPSHOT: {
+        const now = performance.now();
+        if (this._lastSnapTime != null) {
+          this._gaps.push(Math.min(now - this._lastSnapTime, GAP_CLAMP_MS));
+          if (this._gaps.length > GAP_WINDOW) this._gaps.shift();
+          // Ease toward 2× the p90 arrival gap: tight (≈33 ms) on a clean
+          // LAN, widening under jitter so the buffer never starves.
+          const target = Math.max(INTERP_MIN_MS,
+            Math.min(INTERP_MAX_MS, INTERP_GAP_MULT * p90(this._gaps)));
+          this.interpDelay += (target - this.interpDelay) * 0.05;
+        }
+        this._lastSnapTime = now;
+        this.snapshots.push({ ...msg, recvTime: now });
         if (this.snapshots.length > SNAPSHOT_BUFFER_MAX) this.snapshots.shift();
         break;
+      }
       case MSG.MATCH_END:
         this.onMatchEnd?.(msg);
         break;
@@ -77,24 +92,31 @@ export class NetClient {
   setMode(modeId) { this.send(setMode(modeId)); }
   startMatch() { this.send(startMatch()); }
 
-  // Call every render frame with the current local input; sends on change and
-  // as a ~30 Hz keepalive so the server always has a recent input (§11).
-  sendInput(input) {
-    const now = performance.now();
-    const serialized = JSON.stringify(input);
-    if (serialized !== this.lastSentInput || now - this.lastSendTime >= INPUT_SEND_MS) {
-      this.send(inputMsg(this.seq++, input));
-      this.lastSentInput = serialized;
-      this.lastSendTime = now;
-    }
+  // One seq-stamped input per local sim tick (60 Hz), driven by main.js's
+  // accumulator. The seq is the prediction tick — the server echoes the last
+  // one it applied back in snapshots as ackSeq.
+  sendInputTick(seq, input) {
+    this.send(inputMsg(seq, input));
   }
 
-  // Two snapshots bracketing (now - INTERP_DELAY_MS) plus the blend factor,
+  // Arrival-rate stats for the F2 overlay.
+  getNetStats() {
+    const gaps = this._gaps;
+    const mean = gaps.length ? gaps.reduce((a, b) => a + b, 0) / gaps.length : 0;
+    return {
+      snapRate: mean > 0 ? 1000 / mean : 0,
+      meanGap: mean,
+      p90Gap: gaps.length ? p90(gaps) : 0,
+      interpDelay: this.interpDelay,
+    };
+  }
+
+  // Two snapshots bracketing (now - interpDelay) plus the blend factor,
   // timed by receive time (steady at a fixed snapshot rate).
   getInterpolationPair() {
     const buf = this.snapshots;
     if (buf.length === 0) return null;
-    const renderTime = performance.now() - INTERP_DELAY_MS;
+    const renderTime = performance.now() - this.interpDelay;
 
     for (let i = buf.length - 1; i >= 1; i--) {
       const a = buf[i - 1];
@@ -114,4 +136,9 @@ export class NetClient {
     this.ws?.close();
     this.ws = null;
   }
+}
+
+function p90(sorted) {
+  const s = [...sorted].sort((a, b) => a - b);
+  return s[Math.min(s.length - 1, Math.floor(s.length * 0.9))];
 }

@@ -110,7 +110,9 @@ export class Renderer {
   constructor(canvas) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
-    this.debug = false; // toggled with F1 (wired in main.js)
+    this.debug = false;    // toggled with F1 (wired in main.js)
+    this.netDebug = false; // toggled with F2; shows netStats (set by main.js)
+    this.netStats = null;
     this.effects = [];  // {type, x, y, age, ...}
     this.camera = new Camera(canvas.width, canvas.height);
     this._bgCache = new Map();     // level.id → parallax layers
@@ -210,6 +212,14 @@ export class Renderer {
         this.addShake(16);
         this.triggerHitStop(4);
         break;
+      case 'saberSwing':
+        this.effects.push({ type: 'slash', x: ev.x, y: ev.y, aimX: ev.aimX, aimY: ev.aimY, age: 0, life: 8 });
+        break;
+      case 'saberClash':
+        this.effects.push({ type: 'clash', x: ev.x, y: ev.y, age: 0, life: 12 });
+        this.addShake(10);
+        this.triggerHitStop(3);
+        break;
     }
   }
 
@@ -261,6 +271,7 @@ export class Renderer {
 
     // Screen space: HUD and banners are pinned to the view.
     this.drawHUD(state);
+    if (this.netDebug && this.netStats) this.drawNetStats();
     if (state.matchTimer != null && state.phase === 'playing') this.drawMatchClock(state);
     if (state.phase === 'countdown') this.drawCountdown(state);
     if (state.phase === 'roundEnd') this.drawRoundBanner(state);
@@ -569,10 +580,22 @@ export class Renderer {
     line(ctx, 0, NECK_Y, hx * 14, NECK_Y + hy * 14 + 2);
     line(ctx, 0, NECK_Y, hx * 18, NECK_Y + hy * 18);
 
+    // Melee blades sweep across the aim while a swing is active, and rest in
+    // a raised guard otherwise.
+    let weaponAngle = angle;
+    if (weapon.melee) {
+      if ((f.swingFrames ?? 0) > 0) {
+        const p = 1 - f.swingFrames / weapon.swingFrames; // 0 → 1 over the swing
+        weaponAngle = angle + (-1.1 + 2.2 * p);
+      } else {
+        weaponAngle = angle - 0.5; // resting guard, blade up
+      }
+    }
+
     ctx.save();
     ctx.translate(hx * 10, NECK_Y + hy * 10);
-    ctx.rotate(angle);
-    drawGunShape(ctx, weapon.id);
+    ctx.rotate(weaponAngle);
+    drawGunShape(ctx, weapon.id, f.color);
     ctx.restore();
   }
 
@@ -903,6 +926,32 @@ export class Renderer {
           ctx.stroke();
           break;
         }
+        case 'slash': {
+          // Saber swing: a bright crescent sweeping across the aim.
+          const ang = Math.atan2(e.aimY ?? 0, e.aimX ?? 1);
+          ctx.strokeStyle = `rgba(255,255,255,${1 - t})`;
+          ctx.lineWidth = 3 * (1 - t) + 1;
+          ctx.beginPath();
+          ctx.arc(e.x - Math.cos(ang) * 30, e.y - Math.sin(ang) * 30,
+            34 + t * 10, ang - 0.9 + t * 0.6, ang + 0.9 + t * 0.6);
+          ctx.stroke();
+          break;
+        }
+        case 'clash': {
+          // Blades meeting: white shockwave ring + orbiting sparks.
+          ctx.strokeStyle = `rgba(255,255,255,${1 - t})`;
+          ctx.lineWidth = 4 * (1 - t) + 1;
+          ctx.beginPath();
+          ctx.arc(e.x, e.y, 6 + t * 42, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.fillStyle = `rgba(255,210,77,${1 - t})`;
+          for (let i = 0; i < 6; i++) {
+            const a = (i / 6) * Math.PI * 2 + t * 1.5;
+            const d = 8 + t * 34;
+            ctx.fillRect(e.x + Math.cos(a) * d - 1.5, e.y + Math.sin(a) * d - 1.5, 3, 3);
+          }
+          break;
+        }
       }
       e.age += 1;
     }
@@ -984,6 +1033,29 @@ export class Renderer {
     ctx.textAlign = 'center';
     ctx.fillText(text, STAGE.width / 2, 40);
     ctx.textAlign = 'left';
+  }
+
+  // F2 overlay: is the problem the network or this machine? Healthy LAN ≈
+  // 60 snap/s, p90 gap ≤ 25 ms, interp 33-50 ms, pred err a few px.
+  drawNetStats() {
+    const { ctx } = this;
+    const s = this.netStats;
+    const lines = [
+      `fps      ${s.fps.toFixed(0)}`,
+      `snap/s   ${s.snapRate.toFixed(0)}`,
+      `gap ms   ${s.meanGap.toFixed(1)} / p90 ${s.p90Gap.toFixed(1)}`,
+      `interp   ${s.interpDelay.toFixed(0)} ms`,
+      `pred err ${s.predErrPx.toFixed(1)} px${s.predicting ? '' : ' (off)'}`,
+      `pending  ${s.pending}`,
+    ];
+    const x = STAGE.width - 216;
+    ctx.fillStyle = 'rgba(10, 12, 20, 0.75)';
+    ctx.beginPath();
+    ctx.roundRect(x, 14, 202, 16 * lines.length + 14, 8);
+    ctx.fill();
+    ctx.fillStyle = '#7dff7a';
+    ctx.font = '12px ui-monospace, monospace';
+    lines.forEach((line, i) => ctx.fillText(line, x + 12, 32 + i * 16));
   }
 
   drawCountdown(state) {
@@ -1103,8 +1175,26 @@ function line(ctx, x1, y1, x2, y2) {
   ctx.stroke();
 }
 
-function drawGunShape(ctx, weaponId) {
+function drawGunShape(ctx, weaponId, color = '#cdd3ea') {
   switch (weaponId) {
+    case 'saber': {
+      // Hilt + a glowing blade: colored halo around a white-hot core.
+      ctx.fillStyle = '#9aa0b4';
+      ctx.fillRect(-2, -2.5, 12, 5);
+      ctx.save();
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 12;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 5;
+      ctx.lineCap = 'round';
+      line(ctx, 10, 0, 46, 0);
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      line(ctx, 10, 0, 46, 0);
+      ctx.restore();
+      break;
+    }
     case 'pistol':
       ctx.fillRect(0, -2.5, 16, 5);
       ctx.fillRect(1, 0, 4, 9);

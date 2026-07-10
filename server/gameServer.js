@@ -132,6 +132,17 @@ export class GameServer {
       invulnFrames: f.invulnFrames,
       weaponId: f.weaponId,
       chargeFrames: f.chargeFrames,
+      swingFrames: f.swingFrames,
+      // Movement state the client needs to re-seed its own-fighter prediction.
+      jumpsRemaining: f.jumpsRemaining,
+      airDashesRemaining: f.airDashesRemaining,
+      dashFrames: f.dashFrames,
+      dashDir: f.dashDir,
+      dashCooldown: f.dashCooldown,
+      dropThroughTimer: f.dropThroughTimer,
+      wallDir: f.wallDir,
+      flinchFrames: f.flinchFrames,
+      fireCooldown: f.fireCooldown,
     }));
     const projectiles = this.state.projectiles.map((p) => ({
       id: p.id, weaponId: p.weaponId, x: r1(p.x), y: r1(p.y), vx: r1(p.vx), vy: r1(p.vy),
@@ -151,6 +162,7 @@ export class GameServer {
       modeId: this.state.modeId,
       matchTimer: this.state.matchTimer,
       bomb: this.state.bomb,
+      ackSeq: { ...this.lastSeq }, // per-player last applied input seq (for prediction)
       projectiles,
       drops,
     }));

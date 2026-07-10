@@ -92,6 +92,7 @@ function createFighter(cfg, index) {
     weaponId: null,          // null = fists
     fireCooldown: 0,
     chargeFrames: 0,         // > 0 while charging a charge-weapon (sniper)
+    swingFrames: 0,          // > 0 while a melee swing is active (clash-parries)
     flinchFrames: 0,
     dropThroughTimer: 0,
     dashFrames: 0,           // > 0 while mid-dash
@@ -118,8 +119,8 @@ function resetFightersForRound(state) {
     f.aimY = 0;
     f.bombImmunity = 0;
     resetFighterCombatState(f);
-    // Gun game hands you your ladder rung; everyone else starts on fists.
-    f.weaponId = mode.ladder ? mode.ladder[f.ladderLevel] : null;
+    // Gun game hands you your ladder rung, saber duel its saber; else fists.
+    f.weaponId = mode.ladder ? mode.ladder[f.ladderLevel] : (mode.equip ?? null);
   });
 }
 
@@ -135,6 +136,7 @@ function resetFighterCombatState(f) {
   f.weaponId = null;
   f.fireCooldown = 0;
   f.chargeFrames = 0;
+  f.swingFrames = 0;
   f.flinchFrames = 0;
   f.dropThroughTimer = 0;
   f.dashFrames = 0;
@@ -215,6 +217,7 @@ export function stepGame(state, inputs, dt) {
     fighter.prevInput = { ...input };
   }
 
+  if (mode.equip) stepSaberHits(next); // melee swings resolve after everyone stepped
   stepProjectiles(next);
   if (mode.pickups) checkPickups(next);
   stepHazards(next);
@@ -227,6 +230,33 @@ export function stepGame(state, inputs, dt) {
   return next;
 }
 
+// --- Client-side prediction -------------------------------------------------------
+
+// Advance ONE fighter one tick on a throwaway state shim — used by the online
+// client to predict its own fighter between authoritative snapshots. Combat
+// side effects are contained: projectiles/events land in shim arrays that the
+// caller discards, punches hit nobody (the shim holds only this fighter, and
+// the punch loop skips self), and the shim rng only feeds shot spread — the
+// server sim's RNG cursor is never touched. Movement, cooldowns, recoil, and
+// stage physics (incl. bounce pads) all run for real, which is what
+// prediction needs. Mutates and returns `fighter`; caller passes a clone.
+export function predictFighterStep(fighter, input, levelIndex, modeId = 'classic') {
+  const shim = {
+    levelIndex,
+    modeId,
+    fighters: { [fighter.id]: fighter },
+    projectiles: [],
+    drops: [],
+    events: [],
+    bomb: null,
+    nextEntityId: 1,
+    rng: 0,
+  };
+  stepFighter(shim, fighter, input, getMode(modeId));
+  fighter.prevInput = { ...input };
+  return fighter;
+}
+
 // --- Fighter stepping -----------------------------------------------------------
 
 function stepFighter(state, fighter, input, mode) {
@@ -235,6 +265,7 @@ function stepFighter(state, fighter, input, mode) {
   if (fighter.dropThroughTimer > 0) fighter.dropThroughTimer -= 1;
   if (fighter.dashCooldown > 0) fighter.dashCooldown -= 1;
   if (fighter.invulnFrames > 0) fighter.invulnFrames -= 1;
+  if (fighter.swingFrames > 0) fighter.swingFrames -= 1;
 
   updateAim(fighter, input);
 
@@ -248,7 +279,8 @@ function stepFighter(state, fighter, input, mode) {
     } else if (weapon && weapon.charge) {
       stepChargeWeapon(state, fighter, input, weapon); // hold to charge, release to fire
     } else if (input.shoot) {
-      if (fighter.weaponId) tryFire(state, fighter, input);
+      if (weapon?.melee) trySaberSwing(state, fighter, input, weapon);
+      else if (fighter.weaponId) tryFire(state, fighter, input);
       else tryPunch(state, fighter, input);
     }
   }
@@ -379,6 +411,76 @@ function tryPunch(state, fighter, input) {
       vy: fighter.aimY * PUNCH_KNOCKBACK - 2, // slight pop-up so punches feel meaty
     });
   }
+}
+
+// Start a melee swing. Only the WIND-UP happens here — damage and clashes
+// resolve in stepSaberHits AFTER every fighter has stepped, so two fighters
+// swinging on the same tick parry each other symmetrically (no player-order
+// bias). While swingFrames > 0 the blade is "hot": it clash-parries any
+// incoming swing, so a whiffed swing still defends for a beat.
+function trySaberSwing(state, fighter, input, weapon) {
+  if (fighter.fireCooldown > 0) return;
+  if (!pressed(input, fighter.prevInput, 'shoot')) return; // no auto-repeat
+  fighter.fireCooldown = weapon.fireCooldown;
+  fighter.swingFrames = weapon.swingFrames;
+  state.events.push({
+    type: 'saberSwing', id: fighter.id,
+    x: fighter.x + fighter.aimX * weapon.range,
+    y: fighter.y + fighter.aimY * weapon.range,
+    aimX: fighter.aimX, aimY: fighter.aimY,
+  });
+}
+
+// Resolve this tick's fresh swings (swingFrames still at its starting value).
+// Victim mid-swing → CLASH: no damage, both blades consumed, both fighters
+// shoved apart. Victim not swinging → the saber hit lands (lethal).
+function stepSaberHits(state) {
+  const fighters = Object.values(state.fighters);
+  const swingers = fighters.filter((f) => {
+    const w = f.weaponId ? WEAPONS[f.weaponId] : null;
+    return f.alive && w?.melee && f.swingFrames === w.swingFrames;
+  });
+  for (const attacker of swingers) {
+    if (!attacker.alive || attacker.swingFrames === 0) continue; // clashed/died already
+    const weapon = WEAPONS[attacker.weaponId];
+    for (const victim of fighters) {
+      if (victim.id === attacker.id || !victim.alive) continue;
+      // Check along the whole blade, like the punch arc.
+      const hit = [0.5, 1].some((reach) => circleOverlapsFighter(
+        attacker.x + attacker.aimX * weapon.range * reach,
+        attacker.y + attacker.aimY * weapon.range * reach,
+        weapon.radius, victim));
+      if (!hit) continue;
+      if (victim.swingFrames > 0) {
+        clashSabers(state, attacker, victim, weapon);
+        break; // this swing is spent
+      }
+      damageFighter(state, victim, weapon.damage, attacker.id, {
+        vx: attacker.aimX * weapon.knockback,
+        vy: attacker.aimY * weapon.knockback - 2,
+      });
+    }
+  }
+}
+
+function clashSabers(state, a, b, weapon) {
+  const dir = Math.sign(b.x - a.x) || a.facing; // shove them apart
+  a.vx = -dir * weapon.clashKnockback;
+  b.vx = dir * weapon.clashKnockback;
+  a.vy -= 4;
+  b.vy -= 4;
+  a.onGround = false;
+  b.onGround = false;
+  // Both swings are consumed; the shared cooldown resets the duel's tempo.
+  a.swingFrames = 0;
+  b.swingFrames = 0;
+  a.fireCooldown = weapon.fireCooldown;
+  b.fireCooldown = weapon.fireCooldown;
+  state.events.push({
+    type: 'saberClash',
+    x: (a.x + b.x) / 2,
+    y: (a.y + b.y) / 2 + GUN_MOUNT_Y,
+  });
 }
 
 function tryFire(state, fighter, input) {
@@ -663,7 +765,7 @@ function stepRespawns(state, mode) {
     f.x = spawn.x;
     f.y = spawn.y - FIGHTER_HURTBOX.h / 2;
     f.invulnFrames = SPAWN_INVULN_FRAMES;
-    f.weaponId = mode.ladder ? mode.ladder[f.ladderLevel] : null;
+    f.weaponId = mode.ladder ? mode.ladder[f.ladderLevel] : (mode.equip ?? null);
     state.events.push({ type: 'respawn', id: f.id, x: f.x, y: f.y });
   }
 }

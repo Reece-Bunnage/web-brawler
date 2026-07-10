@@ -1,7 +1,7 @@
 // Unit-drives the shared Stick Fight sim (no framework — plain node:assert).
 // Run with: npm test
 import assert from 'node:assert/strict';
-import { createInitialState, stepGame, EMPTY_INPUT } from '../shared/simulation.js';
+import { createInitialState, stepGame, predictFighterStep, EMPTY_INPUT } from '../shared/simulation.js';
 import { WEAPONS, WEAPON_IDS } from '../shared/weapons.js';
 import {
   DT, MAX_HP, MOVE_SPEED, AIR_JUMPS, FIGHTER_HURTBOX,
@@ -780,6 +780,134 @@ test('hot potato: with 3 players the bomb re-arms on a survivor after exploding'
   assert.ok(s.bomb, 'bomb re-armed');
   assert.notEqual(s.bomb.carrierId, first);
   assert.equal(s.bomb.fuse, MODES.hotpotato.bomb.rearmFuse);
+});
+
+// --- Saber duel ----------------------------------------------------------------
+
+// Two saber fighters settled on the floor within blade range of each other.
+function saberDuel() {
+  let s = skipCountdown(modeState('saber'));
+  s.fighters.p1.x = 500;
+  s.fighters.p2.x = 550; // within saber range (58)
+  s = run(s, 10);
+  s.fighters.p1.x = 500;
+  s.fighters.p2.x = 550;
+  return s;
+}
+
+test('saber mode: everyone spawns with a saber and no guns ever drop', () => {
+  let s = skipCountdown(modeState('saber'));
+  assert.equal(s.fighters.p1.weaponId, 'saber');
+  assert.equal(s.fighters.p2.weaponId, 'saber');
+  assert.ok(!WEAPON_IDS.includes('saber'), 'saber is not in the sky-drop pool');
+  s = run(s, 2000);
+  assert.equal(s.drops.length, 0);
+});
+
+test('saber mode: a swing insta-kills a non-swinging victim', () => {
+  let s = saberDuel();
+  s = run(s, 1, () => ({ p1: input({ shoot: true, aimX: 1 }) }));
+  assert.equal(s.fighters.p2.alive, false, 'one hit kills');
+  assert.equal(s.phase, 'roundEnd');
+  assert.equal(s.roundWinnerId, 'p1');
+  assert.equal(s.fighters.p1.roundWins, 1);
+});
+
+test('saber mode: simultaneous swings clash — no damage, both shoved apart', () => {
+  let s = saberDuel();
+  s = run(s, 1, () => ({
+    p1: input({ shoot: true, aimX: 1 }),
+    p2: input({ shoot: true, aimX: -1 }),
+  }));
+  assert.equal(s.fighters.p1.alive, true, 'p1 survived the clash');
+  assert.equal(s.fighters.p2.alive, true, 'p2 survived the clash');
+  assert.equal(s.fighters.p1.hp, MAX_HP, 'no chip damage');
+  assert.equal(s.fighters.p2.hp, MAX_HP);
+  assert.ok(s.fighters.p1.vx < 0 && s.fighters.p2.vx > 0, 'shoved apart');
+  assert.ok(s.events.some((e) => e.type === 'saberClash'), 'clash event emitted');
+  assert.equal(s.fighters.p1.swingFrames, 0, 'both swings consumed');
+  assert.equal(s.fighters.p2.swingFrames, 0);
+});
+
+test('saber mode: a recent swing still parries (the active window deflects)', () => {
+  let s = saberDuel();
+  // p2 swings first while p1 is out of reach — a whiff.
+  s.fighters.p1.x = 300;
+  s = run(s, 1, () => ({ p2: input({ shoot: true, aimX: -1 }) }));
+  assert.equal(s.fighters.p1.alive, true, 'whiffed swing hit nobody');
+  assert.ok(s.fighters.p2.swingFrames > 0, 'p2 blade still active');
+  // Two frames later p1 closes in and swings — p2's active blade deflects it.
+  s.fighters.p1.x = 500;
+  s.fighters.p1.vx = 0;
+  s = run(s, 1, () => ({ p1: input({ shoot: true, aimX: 1 }) }));
+  assert.equal(s.fighters.p2.alive, true, 'parried by the active window');
+  assert.ok(s.events.some((e) => e.type === 'saberClash'));
+});
+
+test('saber mode: swings respect the cooldown and do not auto-repeat', () => {
+  let s = saberDuel();
+  s.fighters.p2.x = 900; // out of range: count swings via events
+  let swings = 0;
+  s = run(s, WEAPONS.saber.fireCooldown + 2, (i, st) => {
+    swings += st.events.filter((e) => e.type === 'saberSwing').length;
+    return { p1: input({ shoot: true, aimX: 1 }) };
+  });
+  swings += s.events.filter((e) => e.type === 'saberSwing').length;
+  assert.equal(swings, 1, 'held attack swings exactly once (no auto-repeat)');
+});
+
+// --- Client-side prediction --------------------------------------------------
+
+test('predictFighterStep matches stepGame exactly for a lone fighter', () => {
+  // One fighter: checkRoundEnd never fires (<2 fighters); spawns suppressed.
+  let s = skipCountdown(createInitialState([{ id: 'p1' }], 5, 0));
+  s.nextSpawnTimer = 100000;
+  s = run(s, 30); // settle on the floor
+
+  let ghost = structuredClone(s.fighters.p1);
+  const script = (i) => {
+    if (i === 30 || i === 40) return input({ jump: true });      // jump, then air jump
+    if (i < 45) return input({ right: true });
+    if (i === 50) return input({ left: true, dash: true });
+    if (i < 90) return input({ left: true });
+    return input({});
+  };
+  for (let i = 0; i < 150; i++) {
+    const inp = script(i);
+    s = stepGame(s, { p1: inp }, DT);
+    ghost = predictFighterStep(ghost, inp, s.levelIndex, s.modeId);
+    for (const k of ['x', 'y', 'vx', 'vy', 'onGround', 'facing', 'jumpsRemaining',
+      'airDashesRemaining', 'dashFrames', 'dashCooldown', 'wallDir', 'fireCooldown']) {
+      assert.deepEqual(ghost[k], s.fighters.p1[k], `tick ${i}: ${k} diverged`);
+    }
+  }
+});
+
+test('predictFighterStep contains combat side effects', () => {
+  let s = skipCountdown(createInitialState([{ id: 'p1' }], 1, 0));
+  s.nextSpawnTimer = 100000;
+  s = run(s, 30);
+  const ghost = structuredClone(s.fighters.p1);
+  ghost.weaponId = 'pistol';
+  ghost.fireCooldown = 0;
+  const vx0 = ghost.vx;
+  const out = predictFighterStep(ghost, input({ shoot: true, aimX: 1 }), 0, 'classic');
+  assert.equal(out, ghost, 'mutates and returns the same fighter');
+  assert.equal(ghost.fireCooldown, WEAPONS.pistol.fireCooldown, 'shot fired (cooldown set)');
+  assert.ok(ghost.vx < vx0, 'recoil applied for real');
+});
+
+test('predictFighterStep edge-detects a held jump across replayed ticks', () => {
+  let s = skipCountdown(createInitialState([{ id: 'p1' }], 1, 0));
+  s.nextSpawnTimer = 100000;
+  s = run(s, 30);
+  const ghost = structuredClone(s.fighters.p1);
+  ghost.prevInput = { ...EMPTY_INPUT }; // snapshot-shaped fighter, seeded prevInput
+  predictFighterStep(ghost, input({ jump: true }), 0, 'classic');
+  assert.ok(ghost.vy < 0, 'first held tick jumps');
+  const jumps = ghost.jumpsRemaining;
+  for (let i = 0; i < 10; i++) predictFighterStep(ghost, input({ jump: true }), 0, 'classic');
+  assert.equal(ghost.jumpsRemaining, jumps, 'held jump never re-triggers an air jump');
 });
 
 // --- Runner -----------------------------------------------------------------

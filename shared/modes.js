@@ -15,6 +15,7 @@
 //   matchTimeFrames,  // (timed modes) total match length in frames
 //   ladder,           // (gun game) weaponId per kill rung; null = fists (final rung)
 //   bomb,             // (hot potato) { initialFuse, rearmFuse, passImmunity } in frames
+//   equip,            // weaponId everyone holds at round start (saber duel)
 // }
 
 export const MODES = {
@@ -43,6 +44,13 @@ export const MODES = {
     weaponSpawns: false, pickups: false, throwEnabled: false,
     respawn: true, rounds: false, winCondition: 'ladder',
     ladder: ['pistol', 'uzi', 'shotgun', 'bazooka', 'sniper', null], // null = fists
+  },
+  saber: {
+    id: 'saber', name: 'Saber Duel',
+    description: 'Everyone gets a lightsaber. One hit kills — unless both are swinging and the blades clash.',
+    weaponSpawns: false, pickups: false, throwEnabled: false,
+    respawn: false, rounds: true, winCondition: 'roundWins',
+    equip: 'saber', // everyone starts each round holding this weapon
   },
   hotpotato: {
     id: 'hotpotato', name: 'Hot Potato',

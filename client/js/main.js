@@ -4,7 +4,9 @@ import { Renderer, interpolateSnapshots } from './renderer.js';
 import { LocalGame } from './localGame.js';
 import { NetClient } from './net.js';
 import { AudioManager } from './audio.js';
+import { Predictor } from './prediction.js';
 import { standingsForMode } from '/shared/modes.js';
+import { TICK_RATE } from '/shared/constants.js';
 import * as ui from './ui.js';
 
 const canvas = document.getElementById('game');
@@ -18,11 +20,14 @@ const unlockAudio = () => audio.unlock();
 window.addEventListener('keydown', unlockAudio);
 window.addEventListener('pointerdown', unlockAudio);
 
-// F1 toggles the hitbox debug overlay; M toggles mute.
+// F1 toggles the hitbox debug overlay; F2 the net-stats overlay; M mute.
 window.addEventListener('keydown', (e) => {
   if (e.code === 'F1') {
     e.preventDefault();
     renderer.toggleDebug();
+  } else if (e.code === 'F2') {
+    e.preventDefault();
+    renderer.netDebug = !renderer.netDebug;
   } else if (e.code === 'KeyM') {
     e.preventDefault();
     syncAudioControls(audio.toggleMute());
@@ -160,22 +165,39 @@ function startOnlineMatch() {
   let lastEventTick = -1;
   let lastRenderState = null;
 
+  // Fixed 60 Hz local sim ticks (mirror of the server loop): each tick stamps
+  // and sends one input and advances the own-fighter prediction one step, so
+  // prediction stays in lockstep with server ticks regardless of display Hz.
+  const TICK_MS = 1000 / TICK_RATE;
+  const MAX_ACC_MS = 250; // backgrounded tab: skip time instead of spiraling
+  let acc = 0;
+  let lastTime = performance.now();
+  const predictor = new Predictor(net.yourId);
+
+  // Rolling fps for the F2 overlay.
+  let fpsCount = 0;
+  let fpsWindowStart = performance.now();
+  let fps = 0;
+
   const frame = () => {
     if (uiMode !== 'match') return;
+    const now = performance.now();
+    acc = Math.min(acc + (now - lastTime), MAX_ACC_MS);
+    lastTime = now;
 
-    // Hit-stop: hold the last frame for a few ticks on big impacts (cosmetic;
-    // the authoritative server never pauses, so this can't desync).
-    if (renderer.hitStop > 0) {
-      renderer.hitStop -= 1;
-      if (lastRenderState) renderer.draw(lastRenderState);
-      onlineLoop = requestAnimationFrame(frame);
-      return;
+    // Input + prediction run even during hit-stop (which freezes only the
+    // draw) — pausing them would stall seq generation and cause a
+    // misprediction burst after every big hit.
+    while (acc >= TICK_MS) {
+      acc -= TICK_MS;
+      // Aim with the mouse relative to our own fighter's on-screen position
+      // (the camera moves, so world coords and screen coords differ).
+      const selfScreen = renderer.worldToScreen(selfPos.x, selfPos.y);
+      const input = inputManager.getMouseAimInput(selfScreen.x, selfScreen.y);
+      const seq = predictor.record(input);
+      net.sendInputTick(seq, input);
+      predictor.step(input);
     }
-
-    // Aim with the mouse relative to our own fighter's on-screen position
-    // (the camera moves, so world coords and screen coords differ).
-    const selfScreen = renderer.worldToScreen(selfPos.x, selfPos.y);
-    net.sendInput(inputManager.getMouseAimInput(selfScreen.x, selfScreen.y));
 
     // Play newly arrived events as one-shot cues.
     for (const snap of net.snapshots) {
@@ -187,14 +209,39 @@ function startOnlineMatch() {
       }
     }
 
-    const pair = net.getInterpolationPair();
-    if (pair) {
-      const state = interpolateSnapshots(pair.a, pair.b, pair.t);
-      const self = state.fighters[net.yourId];
-      if (self) selfPos = { x: self.x, y: self.y };
-      lastRenderState = state;
-      renderer.draw(state);
-      audio.update(state);
+    // Rebase the prediction on the newest authoritative snapshot.
+    predictor.reconcile(net.snapshots.at(-1));
+
+    fpsCount += 1;
+    if (now - fpsWindowStart >= 1000) {
+      fps = fpsCount * 1000 / (now - fpsWindowStart);
+      fpsCount = 0;
+      fpsWindowStart = now;
+    }
+
+    if (renderer.hitStop > 0) {
+      // Hit-stop: hold the last frame for a few ticks on big impacts
+      // (cosmetic; the authoritative server never pauses, so no desync).
+      renderer.hitStop -= 1;
+      if (lastRenderState) renderer.draw(lastRenderState);
+    } else {
+      const pair = net.getInterpolationPair();
+      if (pair) {
+        const state = interpolateSnapshots(pair.a, pair.b, pair.t);
+        predictor.apply(state); // own fighter pose from prediction
+        const self = state.fighters[net.yourId];
+        if (self) selfPos = { x: self.x, y: self.y };
+        renderer.netStats = {
+          fps,
+          ...net.getNetStats(),
+          pending: predictor.pending.length,
+          predErrPx: predictor.errorPx(),
+          predicting: !!predictor.predicted,
+        };
+        lastRenderState = state;
+        renderer.draw(state);
+        audio.update(state);
+      }
     }
     onlineLoop = requestAnimationFrame(frame);
   };

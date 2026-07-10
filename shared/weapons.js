@@ -63,6 +63,24 @@ export const WEAPONS = {
     explosive: true, explosionRadius: 75, explosionDamage: 45, explosionKnockback: 10,
     barrel: 22,
   },
+  saber: {
+    id: 'saber', name: 'Saber',
+    // Melee: no projectiles — swings resolve in stepSaberHits (simulation.js).
+    // One hit kills, but a victim who is mid-swing (swingFrames > 0) CLASHES
+    // instead: no damage, both fighters shoved apart. Saber-mode only; the
+    // `melee` flag keeps it out of the sky-drop pool.
+    melee: true,
+    auto: false, fireCooldown: 24,
+    damage: 999,             // insta-kill
+    knockback: 9,            // death impulse for the ragdoll
+    range: 58,               // reach from fighter center (punch is 42)
+    radius: 26,              // hit circle along the blade
+    swingFrames: 9,          // active window: clash-parries incoming swings
+    clashKnockback: 13,      // both fighters shoved apart on a clash
+    recoil: 0, projectileSpeed: 0, projectileCount: 0, spread: 0,
+    projectileLife: 0, gravityFactor: 0,
+    explosive: false, barrel: 30,
+  },
   sniper: {
     id: 'sniper', name: 'Sniper',
     // Hold shoot to charge (a laser sight telegraphs the line), release to fire.
@@ -78,4 +96,5 @@ export const WEAPONS = {
   },
 };
 
-export const WEAPON_IDS = Object.keys(WEAPONS);
+// The sky-drop pool: guns only — melee weapons are mode-equipped, never drop.
+export const WEAPON_IDS = Object.keys(WEAPONS).filter((id) => !WEAPONS[id].melee);
