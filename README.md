@@ -98,6 +98,11 @@ predicted, so movement feels instant even though the server is authoritative.
 - **Uzi** — hold to hose, wide spray.
 - **Shotgun** — five pellets, huge kick (the recoil moves *you* too).
 - **Bazooka** — slow rocket, big boom, no friends.
+- **Grenades** — lobbed arc, detonates on impact.
+- **Sniper** — hold to charge (the laser sight gives you away), release for a
+  near one-shot with a kick like a mule.
+- **Lightsaber** — Saber Duel mode only, never drops. One swing kills; if both
+  of you swing, the blades clash and nobody dies. Judge your reach, young LUKE.
 
 ## Development notes
 

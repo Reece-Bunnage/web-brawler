@@ -33,7 +33,13 @@ const httpServer = http.createServer(async (req, res) => {
   const filePath = resolvePath(urlPath);
   try {
     const body = await readFile(filePath);
-    res.writeHead(200, { 'Content-Type': MIME[extname(filePath)] || 'application/octet-stream' });
+    res.writeHead(200, {
+      'Content-Type': MIME[extname(filePath)] || 'application/octet-stream',
+      // No build step and no cache busting: without this, browsers
+      // heuristically cache the JS and players keep playing last week's
+      // game after an update. Everything is tiny — always refetch.
+      'Cache-Control': 'no-store',
+    });
     res.end(body);
   } catch {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
