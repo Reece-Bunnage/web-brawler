@@ -70,9 +70,17 @@ export class GameServer {
     if (!(playerId in this.inputs)) return;
     if (typeof seq !== 'number' || seq <= this.lastSeq[playerId]) return; // stale
     this.lastSeq[playerId] = seq;
-    // Sanitize: only known fields, coerced to booleans.
+    // Sanitize: only known fields; aim components are finite numbers, the
+    // rest booleans.
     const clean = {};
-    for (const key of Object.keys(EMPTY_INPUT)) clean[key] = Boolean(input?.[key]);
+    for (const key of Object.keys(EMPTY_INPUT)) {
+      if (key === 'aimX' || key === 'aimY') {
+        const v = Number(input?.[key]);
+        clean[key] = Number.isFinite(v) ? v : 0;
+      } else {
+        clean[key] = Boolean(input?.[key]);
+      }
+    }
     this.inputs[playerId] = clean;
   }
 
@@ -80,37 +88,54 @@ export class GameServer {
     if (!(playerId in this.inputs)) return;
     delete this.inputs[playerId];
     delete this.lastSeq[playerId];
-    // Their fighter forfeits: zero stocks so the match resolves naturally.
+    // Leaving forfeits: the fighter is removed from this and future rounds.
     const fighter = this.state.fighters[playerId];
-    if (fighter && fighter.stocks > 0) {
-      fighter.stocks = 0;
-      fighter.state = 'ko';
-      this.pendingEvents.push({ type: 'ko', id: playerId, x: fighter.x, y: fighter.y });
+    if (fighter) {
+      this.pendingEvents.push({ type: 'death', id: playerId, x: fighter.x, y: fighter.y });
+      delete this.state.fighters[playerId];
+    }
+    // With fewer than 2 fighters left the match can't continue — the last
+    // one standing wins now.
+    const remaining = Object.values(this.state.fighters);
+    if (remaining.length < 2 && this.timer) {
+      this.state.winnerId = remaining[0]?.id ?? null;
+      this.finish();
     }
   }
 
   broadcastSnapshot() {
-    // Send only what the client needs to render (§11), floats rounded.
+    // Send only what the client needs to render, floats rounded.
+    const r1 = (v) => Math.round(v * 10) / 10;
     const fighters = Object.values(this.state.fighters).map((f) => ({
       id: f.id,
-      characterId: f.characterId,
       name: f.name,
-      x: Math.round(f.x * 10) / 10,
-      y: Math.round(f.y * 10) / 10,
+      color: f.color,
+      x: r1(f.x),
+      y: r1(f.y),
+      vx: r1(f.vx),
       facing: f.facing,
-      percent: Math.round(f.percent * 10) / 10,
-      stocks: f.stocks,
-      state: f.state,
-      currentMove: f.currentMove,
-      invulnFrames: f.invulnFrames,
-      shieldHealth: Math.round(f.shieldHealth),
+      aimX: Math.round(f.aimX * 100) / 100,
+      aimY: Math.round(f.aimY * 100) / 100,
+      hp: Math.round(f.hp),
+      alive: f.alive,
+      roundWins: f.roundWins,
+      weaponId: f.weaponId,
+    }));
+    const projectiles = this.state.projectiles.map((p) => ({
+      id: p.id, weaponId: p.weaponId, x: r1(p.x), y: r1(p.y), vx: r1(p.vx), vy: r1(p.vy),
+    }));
+    const drops = this.state.drops.map((d) => ({
+      id: d.id, weaponId: d.weaponId, x: r1(d.x), y: r1(d.y), landed: d.landed,
     }));
     const events = this.pendingEvents;
     this.pendingEvents = [];
     this.room.broadcast(snapshot(this.state.tick, this.state.phase, fighters, events, {
       countdownTimer: this.state.countdownTimer,
-      hitboxes: this.state.hitboxes, // for the client debug overlay
+      roundNumber: this.state.roundNumber,
+      roundWinnerId: this.state.roundWinnerId,
       winnerId: this.state.winnerId,
+      projectiles,
+      drops,
     }));
   }
 
@@ -118,13 +143,12 @@ export class GameServer {
     this.stop();
     const standings = Object.values(this.state.fighters)
       .slice()
-      .sort((a, b) => b.stocks - a.stocks || a.percent - b.percent)
+      .sort((a, b) => b.roundWins - a.roundWins)
       .map((f) => ({
         id: f.id,
         name: f.name,
-        characterId: f.characterId,
-        stocks: f.stocks,
-        percent: Math.round(f.percent),
+        color: f.color,
+        roundWins: f.roundWins,
       }));
     this.room.broadcast(matchEnd(this.state.winnerId, standings));
     this.room.onMatchOver();

@@ -2,7 +2,6 @@
 // all state is instance-scoped so multiple rooms could be constructed later.
 
 import { MSG, decode, encode, welcome, lobbyState, errorMsg } from '../shared/protocol.js';
-import { CHARACTERS } from '../shared/characters.js';
 import { GameServer } from './gameServer.js';
 
 const MAX_PLAYERS = 4;
@@ -35,15 +34,9 @@ export class Room {
     if (!player) return; // must JOIN first
 
     switch (msg.type) {
-      case MSG.SELECT_CHARACTER:
-        if (CHARACTERS[msg.characterId] && !this.game) {
-          player.characterId = msg.characterId;
-          this.broadcastLobby();
-        }
-        break;
       case MSG.READY:
         if (!this.game) {
-          player.ready = Boolean(msg.ready) && Boolean(player.characterId);
+          player.ready = Boolean(msg.ready);
           this.broadcastLobby();
         }
         break;
@@ -71,7 +64,7 @@ export class Room {
 
     const id = `player${this.nextPlayerNum++}`;
     const name = String(msg.name || '').slice(0, 16).trim() || id;
-    this.players.set(id, { id, name, characterId: null, ready: false, socket });
+    this.players.set(id, { id, name, ready: false, socket });
     this.bySocket.set(socket, id);
     if (!this.hostId) this.hostId = id; // first joiner hosts
 
@@ -87,14 +80,13 @@ export class Room {
     }
     if (this.game) return;
     const players = [...this.players.values()];
-    if (players.length < 2 || !players.every((p) => p.ready && p.characterId)) {
+    if (players.length < 2 || !players.every((p) => p.ready)) {
       this.sendTo(player.id, errorMsg('Need 2–4 players, everyone ready.'));
       return;
     }
 
     this.game = new GameServer(this, players.map((p) => ({
       id: p.id,
-      characterId: p.characterId,
       name: p.name,
     })));
     this.game.start();
@@ -133,7 +125,6 @@ export class Room {
     const players = [...this.players.values()].map((p) => ({
       id: p.id,
       name: p.name,
-      characterId: p.characterId,
       ready: p.ready,
     }));
     this.broadcast(lobbyState(players, this.hostId));

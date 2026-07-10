@@ -4,7 +4,6 @@
 export const MSG = {
   // Client → Server
   JOIN: 'JOIN',
-  SELECT_CHARACTER: 'SELECT_CHARACTER',
   READY: 'READY',
   START_MATCH: 'START_MATCH',
   INPUT: 'INPUT',
@@ -19,7 +18,6 @@ export const MSG = {
 
 // Client → Server
 export const join = (name) => ({ type: MSG.JOIN, name });
-export const selectCharacter = (characterId) => ({ type: MSG.SELECT_CHARACTER, characterId });
 export const ready = (isReady) => ({ type: MSG.READY, ready: isReady });
 export const startMatch = () => ({ type: MSG.START_MATCH });
 export const inputMsg = (seq, input) => ({ type: MSG.INPUT, seq, input });
