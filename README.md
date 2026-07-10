@@ -9,6 +9,11 @@ Punch or shoot the other sticks until you're the only one left — that's a
 round. First to **5 rounds** wins the match. Guns parachute in every few
 seconds; walk over one to grab it. Watch the bazooka: the blast hurts you too.
 
+The map changes every round, rotating through five levels: **Classic**,
+**Twin Towers** (mind the gap), **Islands**, **The Pit**, and **Skyline**.
+Levels are defined in `shared/levels.js` — adding a sixth is just another
+entry in that file.
+
 ## Prerequisites
 
 - [Node.js](https://nodejs.org) LTS (v18 or newer).

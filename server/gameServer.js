@@ -14,7 +14,10 @@ const MAX_ACCUMULATED_MS = 250;
 export class GameServer {
   constructor(room, playerConfigs) {
     this.room = room;
-    this.state = createInitialState(playerConfigs);
+    // Clock-seeded so every match gets a fresh level rotation and drop
+    // pattern; GAME_SEED pins it for integration tests.
+    const seed = process.env.GAME_SEED ? Number(process.env.GAME_SEED) : (Date.now() >>> 0);
+    this.state = createInitialState(playerConfigs, seed);
     this.inputs = {};   // playerId → latest input object (persists across ticks §11)
     this.lastSeq = {};  // playerId → highest seq seen (stale/out-of-order dropped)
     this.pendingEvents = []; // events accumulated between snapshots, drained on send
@@ -132,6 +135,7 @@ export class GameServer {
     this.room.broadcast(snapshot(this.state.tick, this.state.phase, fighters, events, {
       countdownTimer: this.state.countdownTimer,
       roundNumber: this.state.roundNumber,
+      levelIndex: this.state.levelIndex,
       roundWinnerId: this.state.roundWinnerId,
       winnerId: this.state.winnerId,
       projectiles,

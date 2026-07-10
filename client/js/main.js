@@ -41,6 +41,8 @@ function startLocalMatch() {
   uiMode = 'match';
   ui.clearUI();
   inputManager.reset();
+  // ?seed=N pins the level rotation and drop pattern (used by E2E tests).
+  const seedParam = Number(new URLSearchParams(location.search).get('seed'));
   currentGame = new LocalGame({
     inputManager,
     renderer,
@@ -48,6 +50,7 @@ function startLocalMatch() {
       { id: 'p1', name: 'P1' },
       { id: 'p2', name: 'P2' },
     ],
+    seed: Number.isFinite(seedParam) && seedParam > 0 ? seedParam : undefined,
     onMatchEnd: (state) => showLocalResults(state),
   });
   currentGame.start();

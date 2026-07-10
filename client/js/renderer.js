@@ -4,10 +4,11 @@
 // only and fed in via addEvent().
 
 import {
-  STAGE, FLOOR, PLATFORMS, FIGHTER_HURTBOX, MAX_HP,
+  STAGE, FIGHTER_HURTBOX, MAX_HP,
   ROUND_WINS_TARGET, TICK_RATE,
 } from '/shared/constants.js';
 import { WEAPONS } from '/shared/weapons.js';
+import { getLevel } from '/shared/levels.js';
 
 const HEAD_R = 8;
 
@@ -54,7 +55,7 @@ export class Renderer {
     const { ctx } = this;
     ctx.clearRect(0, 0, STAGE.width, STAGE.height);
 
-    this.drawStage();
+    this.drawStage(getLevel(state.levelIndex ?? 0));
     for (const drop of state.drops ?? []) this.drawDrop(drop, state.tick ?? 0);
     for (const fighter of Object.values(state.fighters)) {
       if (fighter.alive) this.drawFighter(fighter, state.tick ?? 0);
@@ -70,13 +71,15 @@ export class Renderer {
     if (state.phase === 'ended') this.drawWinner(state);
   }
 
-  drawStage() {
+  drawStage(level) {
     const { ctx } = this;
-    ctx.fillStyle = '#3a3f55';
-    ctx.fillRect(FLOOR.x, FLOOR.y, FLOOR.w, FLOOR.h);
-    ctx.fillStyle = '#565d7d';
-    ctx.fillRect(FLOOR.x, FLOOR.y, FLOOR.w, 6);
-    for (const p of PLATFORMS) {
+    for (const s of level.solids) {
+      ctx.fillStyle = level.accent;
+      ctx.fillRect(s.x, s.y, s.w, s.h);
+      ctx.fillStyle = '#565d7d';
+      ctx.fillRect(s.x, s.y, s.w, 6);
+    }
+    for (const p of level.platforms) {
       ctx.fillStyle = '#565d7d';
       ctx.fillRect(p.x, p.y, p.w, p.h);
     }
@@ -350,6 +353,9 @@ export class Renderer {
     ctx.fillText(`ROUND ${state.roundNumber ?? 1}`, STAGE.width / 2, STAGE.height / 2 - 90);
     ctx.font = 'bold 110px system-ui';
     ctx.fillText(seconds > 0 ? String(seconds) : 'GO!', STAGE.width / 2, STAGE.height / 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.font = '20px system-ui';
+    ctx.fillText(getLevel(state.levelIndex ?? 0).name, STAGE.width / 2, STAGE.height / 2 + 56);
     ctx.textAlign = 'left';
   }
 
@@ -415,6 +421,7 @@ export function interpolateSnapshots(a, b, t) {
     phase: b.phase,
     countdownTimer: b.countdownTimer,
     roundNumber: b.roundNumber,
+    levelIndex: b.levelIndex,
     roundWinnerId: b.roundWinnerId,
     winnerId: b.winnerId,
     tick: b.tick,

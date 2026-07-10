@@ -33,8 +33,10 @@ const sendInput = (client, input) => send(client, inputMsg(client.seq++, input))
 const me = (client) => client.snapshots.at(-1)?.fighters.find((f) => f.id === client.id);
 const foe = (client) => client.snapshots.at(-1)?.fighters.find((f) => f.id !== client.id);
 
+// GAME_SEED=7 pins the first level to Classic (continuous floor) so the
+// walk-toward-opponent sequence below can't step into a gap.
 const server = spawn('node', ['server.js'], {
-  env: { ...process.env, PORT: String(PORT) },
+  env: { ...process.env, PORT: String(PORT), GAME_SEED: '7' },
   stdio: 'ignore',
 });
 
@@ -66,6 +68,7 @@ try {
   await sleep((COUNTDOWN_FRAMES / TICK_RATE) * 1000 + 400);
   assert.ok(alice.snapshots.length > 5, `snapshots flowing (${alice.snapshots.length})`);
   assert.equal(me(alice).hp, MAX_HP);
+  assert.equal(typeof alice.snapshots.at(-1).levelIndex, 'number', 'levelIndex in snapshots');
 
   // Alice walks right until she's in punch range of Bob.
   const xStart = me(alice).x;

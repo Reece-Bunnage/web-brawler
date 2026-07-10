@@ -4,10 +4,15 @@ import assert from 'node:assert/strict';
 import { createInitialState, stepGame, EMPTY_INPUT } from '../shared/simulation.js';
 import { WEAPONS } from '../shared/weapons.js';
 import {
-  FLOOR, PLATFORMS, DT, MAX_HP, MOVE_SPEED, AIR_JUMPS, FIGHTER_HURTBOX,
+  DT, MAX_HP, MOVE_SPEED, AIR_JUMPS, FIGHTER_HURTBOX,
   COUNTDOWN_FRAMES, ROUND_END_LINGER, ROUND_WINS_TARGET,
   WEAPON_SPAWN_INTERVAL, PUNCH_DAMAGE,
 } from '../shared/constants.js';
+import { LEVELS } from '../shared/levels.js';
+
+// Geometry-dependent tests run on the Classic layout (level 0).
+const FLOOR = LEVELS[0].solids[0];
+const PLATFORMS = LEVELS[0].platforms;
 
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
@@ -34,11 +39,11 @@ function skipCountdown(s) {
   return s;
 }
 
-function newState(seed = 1) {
+function newState(seed = 1, levelIndex = 0) {
   return skipCountdown(createInitialState([
     { id: 'p1', name: 'P1' },
     { id: 'p2', name: 'P2' },
-  ], seed));
+  ], seed, levelIndex));
 }
 
 // Two fighters settled on the floor, facing each other, no weapon drops yet.
@@ -123,6 +128,13 @@ test('punch damages an adjacent enemy and knocks them back', () => {
   s = run(s, 1, () => ({ p1: input({ shoot: true, aimX: 1 }) }));
   assert.equal(s.fighters.p2.hp, MAX_HP - PUNCH_DAMAGE);
   assert.ok(s.fighters.p2.vx > 0, 'knocked away');
+});
+
+test('point-blank punch connects (overlapping opponents)', () => {
+  let s = duelState();
+  s.fighters.p2.x = s.fighters.p1.x + 3; // practically on top of each other
+  s = run(s, 1, () => ({ p1: input({ shoot: true, aimX: 1 }) }));
+  assert.equal(s.fighters.p2.hp, MAX_HP - PUNCH_DAMAGE);
 });
 
 test('punch does not auto-repeat while shoot is held', () => {
@@ -300,6 +312,71 @@ test('reaching the round-win target ends the match', () => {
   s = run(s, ROUND_END_LINGER + 2);
   assert.equal(s.phase, 'ended');
   assert.equal(s.winnerId, 'p1');
+});
+
+// --- Levels ---------------------------------------------------------------------
+
+test('every level: fighters spawn standing on ground and settle safely', () => {
+  LEVELS.forEach((level, k) => {
+    let s = newState(1, k);
+    s = run(s, 90);
+    for (const f of Object.values(s.fighters)) {
+      assert.equal(f.alive, true, `${level.id}: fighter fell to death from spawn`);
+      assert.equal(f.onGround, true, `${level.id}: fighter not standing after settle`);
+    }
+  });
+});
+
+test('every level: sky drops land on a surface', () => {
+  LEVELS.forEach((level, k) => {
+    let s = newState(3, k);
+    let landed = false;
+    for (let i = 0; i < 2500 && !landed; i++) {
+      s = stepGame(s, {}, DT);
+      landed = s.drops.some((d) => d.landed);
+    }
+    assert.ok(landed, `${level.id}: no drop ever landed`);
+    const drop = s.drops.find((d) => d.landed);
+    const surfaces = [...level.solids, ...level.platforms];
+    assert.ok(surfaces.some((r) => drop.x > r.x && drop.x < r.x + r.w && Math.abs(drop.y - (r.y - 8)) < 1),
+      `${level.id}: landed drop not resting on a surface`);
+  });
+});
+
+test('the map rotates to a different level each round', () => {
+  let s = newState(9, 0);
+  const first = s.levelIndex;
+  s.fighters.p2.x = 9999; // p1 wins the round via blast zone
+  s = stepGame(s, {}, DT);
+  assert.equal(s.phase, 'roundEnd');
+  s = run(s, ROUND_END_LINGER + 2);
+  assert.equal(s.phase, 'countdown');
+  assert.notEqual(s.levelIndex, first, 'level changed between rounds');
+  assert.ok(s.levelIndex >= 0 && s.levelIndex < LEVELS.length, 'valid level index');
+  // Fighters must be standing on the new level's spawn points.
+  s = run(s, COUNTDOWN_FRAMES + 30);
+  for (const f of Object.values(s.fighters)) {
+    assert.equal(f.alive, true);
+    assert.equal(f.onGround, true);
+  }
+});
+
+test('level choice and rotation are deterministic per seed', () => {
+  const play = () => {
+    let s = createInitialState([{ id: 'p1' }, { id: 'p2' }], 1234);
+    skipCountdown(s);
+    const sequence = [s.levelIndex];
+    for (let round = 0; round < 3; round++) {
+      s.fighters.p2.x = 9999;
+      s.fighters.p2.hp = MAX_HP;
+      s = stepGame(s, {}, DT);
+      s = run(s, ROUND_END_LINGER + 2);
+      skipCountdown(s);
+      sequence.push(s.levelIndex);
+    }
+    return sequence.join(',');
+  };
+  assert.equal(play(), play());
 });
 
 // --- Runner -----------------------------------------------------------------

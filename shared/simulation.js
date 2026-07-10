@@ -6,14 +6,14 @@
 
 import {
   GRAVITY, TERMINAL_VY, GROUND_ACCEL, GROUND_FRICTION, AIR_ACCEL, AIR_DRAG,
-  MOVE_SPEED, JUMP_VELOCITY, AIR_JUMPS,
-  FLOOR, PLATFORMS, SPAWN_POINTS, BLAST,
+  MOVE_SPEED, JUMP_VELOCITY, AIR_JUMPS, BLAST,
   FIGHTER_HURTBOX, MAX_HP, FIGHTER_COLORS, HIT_FLINCH_FRAMES,
   PUNCH_DAMAGE, PUNCH_RANGE, PUNCH_RADIUS, PUNCH_KNOCKBACK, PUNCH_COOLDOWN,
   WEAPON_SPAWN_INTERVAL, WEAPON_SPAWN_MAX, WEAPON_DROP_FALL_SPEED, PICKUP_RADIUS,
   ROUND_WINS_TARGET, COUNTDOWN_FRAMES, ROUND_END_LINGER, ENDED_LINGER_FRAMES,
 } from './constants.js';
 import { WEAPONS, WEAPON_IDS } from './weapons.js';
+import { LEVELS } from './levels.js';
 
 export const EMPTY_INPUT = Object.freeze({
   left: false, right: false, down: false, jump: false, shoot: false,
@@ -25,7 +25,8 @@ const DROP_THROUGH_FRAMES = 10;
 
 // --- State construction ---------------------------------------------------
 
-export function createInitialState(fighterConfigs, seed = 1) {
+// levelIndex: pass an index to pin the map (tests); null picks one by seed.
+export function createInitialState(fighterConfigs, seed = 1, levelIndex = null) {
   const fighters = {};
   fighterConfigs.forEach((cfg, i) => {
     fighters[cfg.id] = createFighter(cfg, i);
@@ -40,6 +41,7 @@ export function createInitialState(fighterConfigs, seed = 1) {
     roundWinnerId: null,
     winnerId: null,
     rng: seed >>> 0,
+    levelIndex: 0, // set for real just below (needs the rng cursor in place)
     nextSpawnTimer: Math.floor(WEAPON_SPAWN_INTERVAL / 2), // first gun comes early
     nextEntityId: 1,
     fighters,
@@ -47,8 +49,13 @@ export function createInitialState(fighterConfigs, seed = 1) {
     projectiles: [],  // {id, ownerId, weaponId, x, y, vx, vy, life}
     events: [],
   };
+  state.levelIndex = levelIndex ?? Math.floor(nextRandom(state) * LEVELS.length);
   resetFightersForRound(state);
   return state;
+}
+
+function getLevel(state) {
+  return LEVELS[state.levelIndex] ?? LEVELS[0];
 }
 
 function createFighter(cfg, index) {
@@ -75,9 +82,10 @@ function createFighter(cfg, index) {
 }
 
 function resetFightersForRound(state) {
+  const spawnPoints = getLevel(state).spawnPoints;
   const list = Object.values(state.fighters);
   list.forEach((f, i) => {
-    const spawn = SPAWN_POINTS[i % SPAWN_POINTS.length];
+    const spawn = spawnPoints[i % spawnPoints.length];
     f.x = spawn.x;
     f.y = spawn.y - FIGHTER_HURTBOX.h / 2; // spawn.y is a feet position
     f.vx = 0;
@@ -179,7 +187,7 @@ function stepFighter(state, fighter, input) {
   updateAim(fighter, input);
 
   if (fighter.flinchFrames === 0) {
-    applyMovementInput(fighter, input);
+    applyMovementInput(fighter, input, getLevel(state));
     if (input.shoot) {
       if (fighter.weaponId) tryFire(state, fighter, input);
       else tryPunch(state, fighter, input);
@@ -202,7 +210,7 @@ function updateAim(fighter, input) {
   }
 }
 
-function applyMovementInput(fighter, input) {
+function applyMovementInput(fighter, input, level) {
   const dir = (input.right ? 1 : 0) - (input.left ? 1 : 0);
 
   if (fighter.onGround) {
@@ -231,20 +239,21 @@ function applyMovementInput(fighter, input) {
   }
 
   // Drop through pass-through platforms by pressing down while standing on one.
-  if (fighter.onGround && input.down && isOnPassThroughPlatform(fighter)) {
+  if (fighter.onGround && input.down && isOnPassThroughPlatform(fighter, level)) {
     fighter.dropThroughTimer = DROP_THROUGH_FRAMES;
     fighter.onGround = false;
   }
 }
 
 function stepFighterPhysics(state, fighter, input) {
+  const level = getLevel(state);
   if (!fighter.onGround) {
     fighter.vy = Math.min(fighter.vy + GRAVITY, TERMINAL_VY);
   }
   fighter.x += fighter.vx;
   fighter.y += fighter.vy;
-  resolveStageCollision(fighter);
-  if (fighter.onGround && !isSupported(fighter)) fighter.onGround = false;
+  resolveStageCollision(fighter, level);
+  if (fighter.onGround && !isSupported(fighter, level)) fighter.onGround = false;
 }
 
 // --- Punch & guns -----------------------------------------------------------------
@@ -260,7 +269,13 @@ function tryPunch(state, fighter, input) {
 
   for (const victim of Object.values(state.fighters)) {
     if (victim.id === fighter.id || !victim.alive) continue;
-    if (!circleOverlapsFighter(fx, fy, PUNCH_RADIUS, victim)) continue;
+    // Check along the whole arm (half reach and full reach), not just at the
+    // fist — otherwise a point-blank punch whiffs past an overlapping target.
+    const hit = [0.5, 1].some((reach) => circleOverlapsFighter(
+      fighter.x + fighter.aimX * PUNCH_RANGE * reach,
+      fighter.y + fighter.aimY * PUNCH_RANGE * reach,
+      PUNCH_RADIUS, victim));
+    if (!hit) continue;
     damageFighter(state, victim, PUNCH_DAMAGE, fighter.id, {
       vx: fighter.aimX * PUNCH_KNOCKBACK,
       vy: fighter.aimY * PUNCH_KNOCKBACK - 2, // slight pop-up so punches feel meaty
@@ -318,7 +333,7 @@ function stepProjectiles(state) {
       p.x += p.vx / substeps;
       p.y += p.vy / substeps;
 
-      if (hitsStage(p)) {
+      if (hitsStage(p, getLevel(state))) {
         if (weapon.explosive) explode(state, p, weapon);
         consumed = true;
         break;
@@ -396,7 +411,8 @@ function stepWeaponSpawns(state) {
   if (state.drops.length >= WEAPON_SPAWN_MAX) return;
 
   const weaponId = WEAPON_IDS[Math.floor(nextRandom(state) * WEAPON_IDS.length)];
-  const x = FLOOR.x + 60 + nextRandom(state) * (FLOOR.w - 120);
+  const { min, max } = getLevel(state).dropRange;
+  const x = min + nextRandom(state) * (max - min);
   state.drops.push({
     id: state.nextEntityId++,
     weaponId,
@@ -408,11 +424,12 @@ function stepWeaponSpawns(state) {
 }
 
 function stepDrops(state) {
+  const level = getLevel(state);
   for (const drop of state.drops) {
     if (drop.landed) continue;
     drop.y += WEAPON_DROP_FALL_SPEED;
     // Land on the first surface whose top we cross.
-    for (const s of [FLOOR, ...PLATFORMS]) {
+    for (const s of [...level.solids, ...level.platforms]) {
       if (drop.x > s.x && drop.x < s.x + s.w &&
           drop.y >= s.y - 8 && drop.y - WEAPON_DROP_FALL_SPEED < s.y - 8) {
         drop.y = s.y - 8;
@@ -420,9 +437,9 @@ function stepDrops(state) {
         break;
       }
     }
-    if (drop.y > BLAST.bottom) drop.landed = true; // missed everything; unreachable, culled below
   }
-  state.drops = state.drops.filter((d) => d.y <= FLOOR.y + 40);
+  // A drop that missed every surface falls into the void and is culled.
+  state.drops = state.drops.filter((d) => d.y <= BLAST.bottom);
 }
 
 function checkPickups(state) {
@@ -489,8 +506,16 @@ function beginNextRoundOrEnd(state) {
   state.drops = [];
   state.projectiles = [];
   state.nextSpawnTimer = Math.floor(WEAPON_SPAWN_INTERVAL / 2);
+  // Rotate the map: pick a different level than the one just played.
+  if (LEVELS.length > 1) {
+    let next = state.levelIndex;
+    while (next === state.levelIndex) {
+      next = Math.floor(nextRandom(state) * LEVELS.length);
+    }
+    state.levelIndex = next;
+  }
   resetFightersForRound(state);
-  state.events.push({ type: 'roundReset', round: state.roundNumber });
+  state.events.push({ type: 'roundReset', round: state.roundNumber, levelIndex: state.levelIndex });
 }
 
 // --- Stage collision (fighter AABB vs floor/platforms) -------------------------
@@ -499,33 +524,33 @@ function fighterBottom(fighter) {
   return fighter.y + FIGHTER_HURTBOX.h / 2;
 }
 
-function isOnPassThroughPlatform(fighter) {
+function isOnPassThroughPlatform(fighter, level) {
   const bottom = fighterBottom(fighter);
-  return PLATFORMS.some((p) =>
+  return level.platforms.some((p) =>
     Math.abs(bottom - p.y) < 1 &&
     fighter.x > p.x && fighter.x < p.x + p.w
   );
 }
 
-function resolveStageCollision(fighter) {
+function resolveStageCollision(fighter, level) {
   const halfW = FIGHTER_HURTBOX.w / 2;
   const halfH = FIGHTER_HURTBOX.h / 2;
   const wasFalling = fighter.vy >= 0;
   const prevBottom = fighter.y - fighter.vy + halfH;
 
-  // Solid floor: land on top; block sides/underside.
-  const f = FLOOR;
-  const overlapsFloorX = fighter.x + halfW > f.x && fighter.x - halfW < f.x + f.w;
-  const overlapsFloorY = fighter.y + halfH > f.y && fighter.y - halfH < f.y + f.h;
-  if (overlapsFloorX && overlapsFloorY) {
-    if (wasFalling && prevBottom <= f.y + 0.001) {
-      landOn(fighter, f.y);
-    } else if (fighter.y - fighter.vy - halfH >= f.y + f.h && fighter.vy < 0) {
-      fighter.y = f.y + f.h + halfH; // bonked the underside
+  // Solid blocks: land on top; block sides/underside.
+  for (const s of level.solids) {
+    const overlapsX = fighter.x + halfW > s.x && fighter.x - halfW < s.x + s.w;
+    const overlapsY = fighter.y + halfH > s.y && fighter.y - halfH < s.y + s.h;
+    if (!overlapsX || !overlapsY) continue;
+    if (wasFalling && prevBottom <= s.y + 0.001) {
+      landOn(fighter, s.y);
+    } else if (fighter.y - fighter.vy - halfH >= s.y + s.h && fighter.vy < 0) {
+      fighter.y = s.y + s.h + halfH; // bonked the underside
       fighter.vy = 0;
     } else {
-      const fromLeft = fighter.x < f.x + f.w / 2;
-      fighter.x = fromLeft ? f.x - halfW : f.x + f.w + halfW;
+      const fromLeft = fighter.x < s.x + s.w / 2;
+      fighter.x = fromLeft ? s.x - halfW : s.x + s.w + halfW;
       fighter.vx = 0;
     }
   }
@@ -533,7 +558,7 @@ function resolveStageCollision(fighter) {
   // Pass-through platforms: only catch a falling fighter whose feet were above
   // the platform top last frame, unless they're deliberately dropping through.
   if (wasFalling && fighter.dropThroughTimer === 0) {
-    for (const p of PLATFORMS) {
+    for (const p of level.platforms) {
       const overlapsX = fighter.x > p.x && fighter.x < p.x + p.w;
       const bottom = fighter.y + halfH;
       if (overlapsX && prevBottom <= p.y + 0.001 && bottom >= p.y) {
@@ -551,20 +576,20 @@ function landOn(fighter, surfaceY) {
   fighter.jumpsRemaining = AIR_JUMPS;
 }
 
-function isSupported(fighter) {
+function isSupported(fighter, level) {
   const bottom = fighterBottom(fighter);
   const halfW = FIGHTER_HURTBOX.w / 2;
-  const onFloor =
-    Math.abs(bottom - FLOOR.y) < 1 &&
-    fighter.x + halfW > FLOOR.x && fighter.x - halfW < FLOOR.x + FLOOR.w;
-  return onFloor || isOnPassThroughPlatform(fighter);
+  const onSolid = level.solids.some((s) =>
+    Math.abs(bottom - s.y) < 1 &&
+    fighter.x + halfW > s.x && fighter.x - halfW < s.x + s.w);
+  return onSolid || isOnPassThroughPlatform(fighter, level);
 }
 
 // --- Geometry helpers --------------------------------------------------------------
 
-function hitsStage(p) {
+function hitsStage(p, level) {
   const inRect = (r) => p.x > r.x && p.x < r.x + r.w && p.y > r.y && p.y < r.y + r.h;
-  return inRect(FLOOR) || PLATFORMS.some(inRect);
+  return level.solids.some(inRect) || level.platforms.some(inRect);
 }
 
 function outOfWorld(p) {

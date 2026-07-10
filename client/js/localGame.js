@@ -12,11 +12,11 @@ const FRAME_MS = 1000 / TICK_RATE;
 const MAX_ACCUMULATED_MS = 250;
 
 export class LocalGame {
-  constructor({ inputManager, renderer, playerConfigs, onMatchEnd }) {
+  constructor({ inputManager, renderer, playerConfigs, onMatchEnd, seed }) {
     this.inputManager = inputManager;
     this.renderer = renderer;
     this.onMatchEnd = onMatchEnd;
-    this.state = createInitialState(playerConfigs);
+    this.state = createInitialState(playerConfigs, seed ?? (Date.now() >>> 0));
     this.running = false;
     this.accumulator = 0;
     this.lastTime = 0;

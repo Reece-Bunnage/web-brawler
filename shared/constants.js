@@ -20,19 +20,8 @@ export const AIR_JUMPS = 1;               // extra mid-air jumps
 export const STAGE = { width: 1280, height: 720 };
 export const BLAST = { left: -300, right: 1580, top: -400, bottom: 1020 };
 
-// Stage geometry: one solid floor plus two pass-through platforms.
-export const FLOOR = { x: 140, y: 600, w: 1000, h: 120 };
-export const PLATFORMS = [
-  { x: 280, y: 440, w: 220, h: 12 },
-  { x: 780, y: 440, w: 220, h: 12 },
-];
-// Spawn coords are FEET positions (y = where the hurtbox bottom goes).
-export const SPAWN_POINTS = [
-  { x: 340, y: 600 },
-  { x: 940, y: 600 },
-  { x: 540, y: 600 },
-  { x: 740, y: 600 },
-];
+// Stage geometry (solids, platforms, spawn points) lives per-level in
+// shared/levels.js; the map rotates every round.
 
 // Stick figures
 export const FIGHTER_HURTBOX = { w: 30, h: 62 };   // head + body envelope
