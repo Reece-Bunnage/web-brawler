@@ -2,7 +2,7 @@
 // sending (on change + ~30 Hz keepalive), and snapshot buffering for the
 // renderer's interpolation.
 
-import { MSG, encode, decode, join, ready, startMatch, inputMsg }
+import { MSG, encode, decode, join, ready, setMode, startMatch, inputMsg }
   from '/shared/protocol.js';
 import { SNAPSHOT_RATE, TICK_RATE } from '/shared/constants.js';
 
@@ -74,6 +74,7 @@ export class NetClient {
 
   join(name) { this.send(join(name)); }
   setReady(isReady) { this.send(ready(isReady)); }
+  setMode(modeId) { this.send(setMode(modeId)); }
   startMatch() { this.send(startMatch()); }
 
   // Call every render frame with the current local input; sends on change and

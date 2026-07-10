@@ -4,6 +4,7 @@ import { Renderer, interpolateSnapshots } from './renderer.js';
 import { LocalGame } from './localGame.js';
 import { NetClient } from './net.js';
 import { AudioManager } from './audio.js';
+import { standingsForMode } from '/shared/modes.js';
 import * as ui from './ui.js';
 
 const canvas = document.getElementById('game');
@@ -64,12 +65,19 @@ function toMainMenu() {
   net?.disconnect();
   net = null;
   uiMode = 'menu';
-  ui.showMainMenu({ onLocal: startLocalMatch, onOnline: startOnlineFlow });
+  ui.showMainMenu({ onLocal: showLocalModeSelect, onOnline: startOnlineFlow });
 }
 
 // --- Local mode ---------------------------------------------------------------
 
-function startLocalMatch() {
+function showLocalModeSelect() {
+  ui.showModeSelect({
+    onSelect: (modeId) => startLocalMatch(modeId),
+    onBack: toMainMenu,
+  });
+}
+
+function startLocalMatch(modeId) {
   uiMode = 'match';
   ui.clearUI();
   inputManager.reset();
@@ -84,6 +92,7 @@ function startLocalMatch() {
       { id: 'p2', name: 'P2' },
     ],
     seed: Number.isFinite(seedParam) && seedParam > 0 ? seedParam : undefined,
+    modeId,
     onMatchEnd: (state) => showLocalResults(state),
   });
   currentGame.start();
@@ -92,22 +101,11 @@ function startLocalMatch() {
 function showLocalResults(state) {
   uiMode = 'results';
   ui.showResults({
-    standings: standingsFrom(Object.values(state.fighters), state.winnerId),
-    onRematch: startLocalMatch,
+    standings: standingsForMode(state.fighters, state.modeId, state.winnerId),
+    modeId: state.modeId,
+    onRematch: () => startLocalMatch(state.modeId),
     onMenu: toMainMenu,
   });
-}
-
-function standingsFrom(fighters, winnerId) {
-  return fighters
-    .slice()
-    .sort((a, b) => b.roundWins - a.roundWins)
-    .map((f) => ({
-      name: f.name,
-      color: f.color,
-      roundWins: f.roundWins,
-      winner: f.id === winnerId,
-    }));
 }
 
 // --- Online mode ---------------------------------------------------------------
@@ -147,8 +145,10 @@ function renderLobby() {
     players: lastLobby.players,
     hostId: lastLobby.hostId,
     yourId: net.yourId,
+    modeId: lastLobby.modeId,
     onReady: (isReady) => net.setReady(isReady),
     onStart: () => net.startMatch(),
+    onModeChange: (modeId) => net.setMode(modeId),
   });
 }
 
@@ -210,12 +210,8 @@ function showOnlineResults(msg) {
   uiMode = 'results';
   stopOnlineLoop();
   ui.showResults({
-    standings: msg.standings.map((s) => ({
-      name: s.name,
-      color: s.color,
-      roundWins: s.roundWins,
-      winner: s.id === msg.winnerId,
-    })),
+    standings: msg.standings, // server standings already sorted for the mode
+    modeId: msg.modeId,
     onRematch: null, // online rematch = everyone re-readies in the lobby
     onMenu: () => { uiMode = 'lobby'; renderLobby(); },
     menuLabel: 'Back to Lobby',

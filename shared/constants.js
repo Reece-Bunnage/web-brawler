@@ -73,6 +73,10 @@ export const WEAPON_SPAWN_MAX = 4;        // max un-picked-up guns on the map
 export const WEAPON_DROP_FALL_SPEED = 3;  // drops fall gently (parachute feel)
 export const PICKUP_RADIUS = 30;          // touch distance to grab a gun
 
+// Respawning (modes with respawn: deathmatch, gun game)
+export const RESPAWN_DELAY_FRAMES = 90;   // 1.5 s dead before coming back
+export const SPAWN_INVULN_FRAMES = 60;    // 1 s of spawn protection
+
 // Rounds
 export const ROUND_WINS_TARGET = 5;       // first to N round wins takes the match
 export const COUNTDOWN_FRAMES = 120;      // 2 s pre-round countdown

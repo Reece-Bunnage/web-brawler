@@ -2,6 +2,7 @@
 // all state is instance-scoped so multiple rooms could be constructed later.
 
 import { MSG, decode, encode, welcome, lobbyState, errorMsg } from '../shared/protocol.js';
+import { MODE_IDS } from '../shared/modes.js';
 import { GameServer } from './gameServer.js';
 
 const MAX_PLAYERS = 4;
@@ -12,6 +13,7 @@ export class Room {
     this.bySocket = new Map();  // socket → playerId
     this.hostId = null;
     this.nextPlayerNum = 1;
+    this.modeId = 'classic';    // host-selected game mode for the next match
     this.game = null;           // GameServer while a match is running
   }
 
@@ -37,6 +39,12 @@ export class Room {
       case MSG.READY:
         if (!this.game) {
           player.ready = Boolean(msg.ready);
+          this.broadcastLobby();
+        }
+        break;
+      case MSG.SET_MODE:
+        if (player.id === this.hostId && !this.game && MODE_IDS.includes(msg.modeId)) {
+          this.modeId = msg.modeId;
           this.broadcastLobby();
         }
         break;
@@ -88,9 +96,9 @@ export class Room {
     this.game = new GameServer(this, players.map((p) => ({
       id: p.id,
       name: p.name,
-    })));
+    })), this.modeId);
     this.game.start();
-    console.log(`[room] match started with ${players.length} players`);
+    console.log(`[room] ${this.modeId} match started with ${players.length} players`);
   }
 
   // Called by GameServer when the match finishes; back to the lobby.
@@ -127,7 +135,7 @@ export class Room {
       name: p.name,
       ready: p.ready,
     }));
-    this.broadcast(lobbyState(players, this.hostId));
+    this.broadcast(lobbyState(players, this.hostId, this.modeId));
   }
 
   sendTo(playerId, msg) {

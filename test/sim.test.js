@@ -10,8 +10,10 @@ import {
   DASH_FRAMES, DASH_COOLDOWN, AIR_DASHES, WALL_SLIDE_SPEED,
   SAW_DAMAGE, HAZARD_HIT_COOLDOWN, BOUNCE_POWER, JUMP_VELOCITY,
   THROW_DAMAGE, GUN_MOUNT_Y, STAGE,
+  RESPAWN_DELAY_FRAMES,
 } from '../shared/constants.js';
 import { LEVELS } from '../shared/levels.js';
+import { MODES } from '../shared/modes.js';
 
 // Geometry-dependent tests run on the Classic layout (level 0).
 const FLOOR = LEVELS[0].solids[0];
@@ -609,6 +611,175 @@ test('wider levels extend the blast zones', () => {
   s.fighters.p1.x = 2900; // past canyon's blast right (2560 + 300)
   s = stepGame(s, {}, DT);
   assert.equal(s.fighters.p1.alive, false, 'out of the wide level bounds');
+});
+
+// --- Game modes ----------------------------------------------------------------
+
+function modeState(modeId, ids = ['p1', 'p2'], seed = 1, levelIndex = 0) {
+  return createInitialState(ids.map((id) => ({ id })), seed, levelIndex, modeId);
+}
+
+test('classic is the default mode and plays identically to explicit classic', () => {
+  const cfgs = [{ id: 'p1' }, { id: 'p2' }];
+  const script = (i) => ({ p1: input({ right: i % 40 < 20, shoot: true, aimX: 1 }) });
+  const a = run(createInitialState(cfgs, 11), 400, script);
+  const b = run(createInitialState(cfgs, 11, null, 'classic'), 400, script);
+  assert.equal(JSON.stringify(a), JSON.stringify(b));
+});
+
+test('melee mode: no guns ever drop and planted drops cannot be picked up', () => {
+  let s = skipCountdown(modeState('melee'));
+  s = run(s, 2000);
+  assert.equal(s.drops.length, 0, 'no sky drops in melee');
+  s.drops.push({ id: 1, weaponId: 'pistol', x: s.fighters.p1.x, y: s.fighters.p1.y, landed: true });
+  s = run(s, 3);
+  assert.equal(s.fighters.p1.weaponId, null, 'pickups disabled');
+});
+
+test('deathmatch: a kill is tracked, no round end, and the victim respawns protected', () => {
+  let s = skipCountdown(modeState('deathmatch'));
+  s.nextSpawnTimer = 100000;
+  s.fighters.p1.x = 500;
+  s.fighters.p2.x = 600;
+  s = run(s, 10);
+  s.fighters.p2.hp = 5;
+  arm(s.fighters.p1, 'pistol');
+  s = run(s, 1, () => ({ p1: input({ shoot: true, aimX: 1 }) }));
+  s = run(s, 20);
+  assert.equal(s.fighters.p2.alive, false);
+  assert.equal(s.phase, 'playing', 'deathmatch never enters roundEnd');
+  assert.equal(s.fighters.p1.kills, 1);
+  assert.equal(s.fighters.p2.deaths, 1);
+
+  s = run(s, RESPAWN_DELAY_FRAMES + 2);
+  assert.equal(s.fighters.p2.alive, true, 'respawned');
+  assert.equal(s.fighters.p2.hp, MAX_HP);
+  assert.ok(s.fighters.p2.invulnFrames > 0, 'spawn protection active');
+});
+
+test('spawn protection blocks damage entirely', () => {
+  let s = skipCountdown(modeState('deathmatch'));
+  s.nextSpawnTimer = 100000;
+  s.fighters.p1.x = 500;
+  s.fighters.p2.x = 540; // punch range
+  s = run(s, 10);
+  s.fighters.p2.invulnFrames = 30;
+  s = run(s, 1, () => ({ p1: input({ shoot: true, aimX: 1 }) }));
+  assert.equal(s.fighters.p2.hp, MAX_HP, 'invulnerable victim took no damage');
+});
+
+test('deathmatch: the clock ends the match and most kills wins', () => {
+  let s = skipCountdown(modeState('deathmatch'));
+  assert.equal(s.matchTimer, MODES.deathmatch.matchTimeFrames);
+  s = run(s, 5);
+  s.fighters.p1.kills = 3;
+  s.fighters.p2.kills = 1;
+  s.matchTimer = 2;
+  s = run(s, 2);
+  assert.equal(s.phase, 'ended');
+  assert.equal(s.winnerId, 'p1');
+});
+
+test('deathmatch: fewer deaths breaks a kill tie; a dead heat is a draw', () => {
+  let s = skipCountdown(modeState('deathmatch'));
+  s = run(s, 5);
+  s.fighters.p1.kills = 2; s.fighters.p1.deaths = 1;
+  s.fighters.p2.kills = 2; s.fighters.p2.deaths = 3;
+  s.matchTimer = 1;
+  s = stepGame(s, {}, DT);
+  assert.equal(s.winnerId, 'p1', 'fewest deaths wins the tiebreak');
+
+  let d = skipCountdown(modeState('deathmatch'));
+  d = run(d, 5);
+  d.fighters.p1.kills = 2;
+  d.fighters.p2.kills = 2;
+  d.matchTimer = 1;
+  d = stepGame(d, {}, DT);
+  assert.equal(d.phase, 'ended');
+  assert.equal(d.winnerId, null, 'exact tie is a draw');
+});
+
+test('gun game: starts on the first rung, no drops, throw disabled', () => {
+  let s = skipCountdown(modeState('gungame'));
+  assert.equal(s.fighters.p1.weaponId, MODES.gungame.ladder[0]);
+  s = run(s, 1500);
+  assert.equal(s.drops.length, 0, 'no sky drops in gun game');
+  s = run(s, 1, () => ({ p1: input({ throw: true, aimX: 1 }) }));
+  assert.equal(s.fighters.p1.weaponId, MODES.gungame.ladder[0], 'throw is disabled');
+});
+
+test('gun game: a kill advances the ladder; the victim respawns on their own rung', () => {
+  let s = skipCountdown(modeState('gungame'));
+  s.fighters.p1.x = 500;
+  s.fighters.p2.x = 600;
+  s = run(s, 10);
+  s.fighters.p2.hp = 5;
+  s = run(s, 1, () => ({ p1: input({ shoot: true, aimX: 1 }) }));
+  s = run(s, 20);
+  assert.equal(s.fighters.p1.kills, 1);
+  assert.equal(s.fighters.p1.ladderLevel, 1);
+  assert.equal(s.fighters.p1.weaponId, MODES.gungame.ladder[1], 're-armed with the next rung');
+  assert.equal(s.phase, 'playing', 'match continues');
+
+  s = run(s, RESPAWN_DELAY_FRAMES + 5);
+  assert.equal(s.fighters.p2.alive, true);
+  assert.equal(s.fighters.p2.weaponId, MODES.gungame.ladder[0], 'victim keeps their own rung');
+});
+
+test('gun game: a final-rung (fists) kill wins the match', () => {
+  let s = skipCountdown(modeState('gungame'));
+  s.fighters.p1.x = 500;
+  s.fighters.p2.x = 540; // punch range
+  s = run(s, 10);
+  s.fighters.p1.ladderLevel = MODES.gungame.ladder.length - 1;
+  s.fighters.p1.weaponId = null; // final rung = fists
+  s.fighters.p2.hp = 5;
+  s = run(s, 1, () => ({ p1: input({ shoot: true, aimX: 1 }) }));
+  assert.equal(s.phase, 'ended');
+  assert.equal(s.winnerId, 'p1');
+});
+
+test('hot potato: the bomb arms on round start; the fuse kills the carrier (2P: round over)', () => {
+  let s = modeState('hotpotato');
+  s = run(s, COUNTDOWN_FRAMES + 1);
+  assert.equal(s.phase, 'playing');
+  assert.ok(s.bomb, 'bomb armed at round start');
+  const carrierId = s.bomb.carrierId;
+  assert.ok(s.fighters[carrierId], 'carrier is a real fighter');
+
+  s.bomb.fuse = 2;
+  s = run(s, 3);
+  assert.equal(s.fighters[carrierId].alive, false, 'fuse expiry killed the carrier');
+  assert.equal(s.phase, 'roundEnd', 'one survivor: round over');
+  assert.equal(s.bomb, null, 'no bomb ticking under the banner');
+  assert.equal(s.roundWinnerId, carrierId === 'p1' ? 'p2' : 'p1');
+});
+
+test('hot potato: touching passes the bomb; pass-immunity stops an instant return', () => {
+  let s = modeState('hotpotato');
+  s = run(s, COUNTDOWN_FRAMES + 1);
+  const carrier = s.bomb.carrierId;
+  const other = carrier === 'p1' ? 'p2' : 'p1';
+  s.fighters[other].x = s.fighters[carrier].x + 5;
+  s.fighters[other].y = s.fighters[carrier].y;
+  s = stepGame(s, {}, DT);
+  assert.equal(s.bomb.carrierId, other, 'bomb passed on touch');
+  assert.ok(s.fighters[carrier].bombImmunity > 0, 'old carrier is immune');
+  s = stepGame(s, {}, DT); // still overlapping
+  assert.equal(s.bomb.carrierId, other, 'immunity holds while overlapping');
+});
+
+test('hot potato: with 3 players the bomb re-arms on a survivor after exploding', () => {
+  let s = modeState('hotpotato', ['p1', 'p2', 'p3']);
+  s = run(s, COUNTDOWN_FRAMES + 1);
+  const first = s.bomb.carrierId;
+  s.bomb.fuse = 1;
+  s = stepGame(s, {}, DT);
+  assert.equal(s.fighters[first].alive, false);
+  assert.equal(s.phase, 'playing', 'round continues with two alive');
+  assert.ok(s.bomb, 'bomb re-armed');
+  assert.notEqual(s.bomb.carrierId, first);
+  assert.equal(s.bomb.fuse, MODES.hotpotato.bomb.rearmFuse);
 });
 
 // --- Runner -----------------------------------------------------------------

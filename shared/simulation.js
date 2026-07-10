@@ -15,9 +15,11 @@ import {
   THROW_SPEED, THROW_DAMAGE, THROW_KNOCKBACK, THROW_LIFE,
   WEAPON_SPAWN_INTERVAL, WEAPON_SPAWN_MAX, WEAPON_DROP_FALL_SPEED, PICKUP_RADIUS,
   ROUND_WINS_TARGET, COUNTDOWN_FRAMES, ROUND_END_LINGER, ENDED_LINGER_FRAMES,
+  RESPAWN_DELAY_FRAMES, SPAWN_INVULN_FRAMES,
 } from './constants.js';
 import { WEAPONS, WEAPON_IDS } from './weapons.js';
 import { LEVELS, blastBounds } from './levels.js';
+import { getMode } from './modes.js';
 
 export const EMPTY_INPUT = Object.freeze({
   left: false, right: false, down: false, jump: false, shoot: false, dash: false, throw: false,
@@ -30,20 +32,24 @@ const DROP_THROUGH_FRAMES = 10;
 // --- State construction ---------------------------------------------------
 
 // levelIndex: pass an index to pin the map (tests); null picks one by seed.
-export function createInitialState(fighterConfigs, seed = 1, levelIndex = null) {
+export function createInitialState(fighterConfigs, seed = 1, levelIndex = null, modeId = 'classic') {
   const fighters = {};
   fighterConfigs.forEach((cfg, i) => {
     fighters[cfg.id] = createFighter(cfg, i);
   });
+  const mode = getMode(modeId);
   const state = {
     tick: 0,
     phase: 'countdown',
+    modeId: mode.id,
     countdownTimer: COUNTDOWN_FRAMES,
     roundEndTimer: 0,
     endTimer: 0,
     roundNumber: 1,
     roundWinnerId: null,
     winnerId: null,
+    matchTimer: mode.matchTimeFrames ?? null, // frames left in a timed mode
+    bomb: null,       // hot potato: {carrierId, fuse}
     rng: seed >>> 0,
     levelIndex: 0, // set for real just below (needs the rng cursor in place)
     nextSpawnTimer: Math.floor(WEAPON_SPAWN_INTERVAL / 2), // first gun comes early
@@ -75,6 +81,12 @@ function createFighter(cfg, index) {
     hp: MAX_HP,
     alive: true,
     roundWins: 0,
+    kills: 0,
+    deaths: 0,
+    ladderLevel: 0,          // gun game: rung index into mode.ladder
+    respawnTimer: 0,         // respawn modes: frames until a dead fighter returns
+    invulnFrames: 0,         // spawn protection countdown
+    bombImmunity: 0,         // hot potato: frames this fighter can't receive the bomb
     onGround: false,
     jumpsRemaining: AIR_JUMPS,
     weaponId: null,          // null = fists
@@ -94,33 +106,45 @@ function createFighter(cfg, index) {
 }
 
 function resetFightersForRound(state) {
+  const mode = getMode(state.modeId);
   const spawnPoints = getLevel(state).spawnPoints;
   const list = Object.values(state.fighters);
   list.forEach((f, i) => {
     const spawn = spawnPoints[i % spawnPoints.length];
     f.x = spawn.x;
     f.y = spawn.y - FIGHTER_HURTBOX.h / 2; // spawn.y is a feet position
-    f.vx = 0;
-    f.vy = 0;
     f.facing = i % 2 === 0 ? 1 : -1;
     f.aimX = f.facing;
     f.aimY = 0;
-    f.hp = MAX_HP;
-    f.alive = true;
-    f.onGround = false;
-    f.jumpsRemaining = AIR_JUMPS;
-    f.weaponId = null;
-    f.fireCooldown = 0;
-    f.chargeFrames = 0;
-    f.flinchFrames = 0;
-    f.dropThroughTimer = 0;
-    f.dashFrames = 0;
-    f.dashCooldown = 0;
-    f.airDashesRemaining = AIR_DASHES;
-    f.wallDir = 0;
-    f.hazardCooldown = 0;
-    f.bounced = false;
+    f.bombImmunity = 0;
+    resetFighterCombatState(f);
+    // Gun game hands you your ladder rung; everyone else starts on fists.
+    f.weaponId = mode.ladder ? mode.ladder[f.ladderLevel] : null;
   });
+}
+
+// Shared between round resets and mid-round respawns so the two can't drift.
+// Does NOT touch position, facing, or match-long stats (roundWins, kills…).
+function resetFighterCombatState(f) {
+  f.vx = 0;
+  f.vy = 0;
+  f.hp = MAX_HP;
+  f.alive = true;
+  f.onGround = false;
+  f.jumpsRemaining = AIR_JUMPS;
+  f.weaponId = null;
+  f.fireCooldown = 0;
+  f.chargeFrames = 0;
+  f.flinchFrames = 0;
+  f.dropThroughTimer = 0;
+  f.dashFrames = 0;
+  f.dashCooldown = 0;
+  f.airDashesRemaining = AIR_DASHES;
+  f.wallDir = 0;
+  f.hazardCooldown = 0;
+  f.bounced = false;
+  f.respawnTimer = 0;
+  f.invulnFrames = 0;
 }
 
 // Deterministic RNG (mulberry32): the cursor lives in state so replaying the
@@ -140,6 +164,7 @@ export function stepGame(state, inputs, dt) {
   const next = structuredClone(state);
   next.tick += 1;
   next.events = [];
+  const mode = getMode(next.modeId);
 
   switch (next.phase) {
     case 'countdown': {
@@ -151,6 +176,7 @@ export function stepGame(state, inputs, dt) {
       if (next.countdownTimer <= 0) {
         next.phase = 'playing';
         next.events.push({ type: 'roundStart', round: next.roundNumber });
+        if (mode.bomb) armBomb(next, mode);
       }
       return next;
     }
@@ -177,33 +203,38 @@ export function stepGame(state, inputs, dt) {
   }
 
   // --- playing ---
-  stepWeaponSpawns(next);
+  if (mode.weaponSpawns) stepWeaponSpawns(next);
   stepDrops(next);
+  if (mode.respawn) stepRespawns(next, mode);
 
   for (const fighter of Object.values(next.fighters)) {
     const input = inputs[fighter.id] || EMPTY_INPUT;
     if (fighter.alive) {
-      stepFighter(next, fighter, input);
+      stepFighter(next, fighter, input, mode);
     }
     fighter.prevInput = { ...input };
   }
 
   stepProjectiles(next);
-  checkPickups(next);
+  if (mode.pickups) checkPickups(next);
   stepHazards(next);
   checkBlastZones(next);
-  checkRoundEnd(next);
+  if (mode.bomb) stepBomb(next, mode);
+  if (mode.rounds) checkRoundEnd(next);
+  // A gun-game final kill can end the match mid-tick; don't tick the clock then.
+  if (next.matchTimer != null && next.phase === 'playing') stepMatchTimer(next);
 
   return next;
 }
 
 // --- Fighter stepping -----------------------------------------------------------
 
-function stepFighter(state, fighter, input) {
+function stepFighter(state, fighter, input, mode) {
   if (fighter.fireCooldown > 0) fighter.fireCooldown -= 1;
   if (fighter.flinchFrames > 0) fighter.flinchFrames -= 1;
   if (fighter.dropThroughTimer > 0) fighter.dropThroughTimer -= 1;
   if (fighter.dashCooldown > 0) fighter.dashCooldown -= 1;
+  if (fighter.invulnFrames > 0) fighter.invulnFrames -= 1;
 
   updateAim(fighter, input);
 
@@ -211,7 +242,8 @@ function stepFighter(state, fighter, input) {
     applyMovementInput(state, fighter, input, getLevel(state));
     const weapon = fighter.weaponId ? WEAPONS[fighter.weaponId] : null;
     // Throw takes priority over firing: hurl the held gun on a fresh press.
-    if (fighter.weaponId && pressed(input, fighter.prevInput, 'throw')) {
+    // (Gun game disables it — your ladder weapon is your identity.)
+    if (fighter.weaponId && mode.throwEnabled && pressed(input, fighter.prevInput, 'throw')) {
       throwWeapon(state, fighter);
     } else if (weapon && weapon.charge) {
       stepChargeWeapon(state, fighter, input, weapon); // hold to charge, release to fire
@@ -571,6 +603,7 @@ function dropThrownWeapon(state, p) {
 }
 
 function damageFighter(state, victim, damage, attackerId, impulse) {
+  if (victim.invulnFrames > 0) return; // spawn protection
   victim.hp -= damage;
   victim.vx += impulse.vx;
   victim.vy += impulse.vy;
@@ -583,18 +616,172 @@ function damageFighter(state, victim, damage, attackerId, impulse) {
     x: victim.x, y: victim.y,
   });
   if (victim.hp <= 0) killFighter(state, victim, attackerId);
+  // Hot potato: landing a hit as the carrier hands the bomb over (punch pass).
+  // After the kill check — a corpse can't take the bomb.
+  if (state.bomb && state.bomb.carrierId === attackerId
+    && victim.alive && victim.bombImmunity <= 0) {
+    passBomb(state, getMode(state.modeId), state.fighters[attackerId], victim);
+  }
 }
 
 function killFighter(state, victim, attackerId = null) {
+  const mode = getMode(state.modeId);
   victim.hp = 0;
   victim.alive = false;
   victim.weaponId = null;
   victim.chargeFrames = 0;
+  victim.deaths += 1;
+  if (mode.respawn) victim.respawnTimer = RESPAWN_DELAY_FRAMES;
   // Carry the death impulse + color on the event so the client can ragdoll the corpse.
   state.events.push({
     type: 'death', id: victim.id, attackerId, color: victim.color,
     x: victim.x, y: victim.y, vx: victim.vx, vy: victim.vy,
   });
+
+  // Credit the kill (self-kills — bazooka misfires, hazards — earn nothing).
+  const attacker = attackerId && attackerId !== victim.id ? state.fighters[attackerId] : null;
+  if (attacker) {
+    attacker.kills += 1;
+    if (mode.ladder) advanceLadder(state, attacker, mode);
+  }
+
+  // Hot potato: the carrier dying (fuse, saw, or the void) re-arms the bomb.
+  if (mode.bomb && state.bomb?.carrierId === victim.id) {
+    rearmBomb(state, mode, victim.id);
+  }
+}
+
+// --- Respawning (deathmatch, gun game) ---------------------------------------------
+
+function stepRespawns(state, mode) {
+  for (const f of Object.values(state.fighters)) {
+    if (f.alive || f.respawnTimer <= 0) continue;
+    f.respawnTimer -= 1;
+    if (f.respawnTimer > 0) continue;
+    const spawn = pickRespawnPoint(state, f);
+    resetFighterCombatState(f);
+    f.x = spawn.x;
+    f.y = spawn.y - FIGHTER_HURTBOX.h / 2;
+    f.invulnFrames = SPAWN_INVULN_FRAMES;
+    f.weaponId = mode.ladder ? mode.ladder[f.ladderLevel] : null;
+    state.events.push({ type: 'respawn', id: f.id, x: f.x, y: f.y });
+  }
+}
+
+// Deterministic (no RNG — the cursor must stay in lockstep with classic):
+// the spawn point farthest from the nearest living enemy, ties to lowest index.
+function pickRespawnPoint(state, fighter) {
+  const points = getLevel(state).spawnPoints;
+  const enemies = Object.values(state.fighters)
+    .filter((f) => f.alive && f.id !== fighter.id);
+  let best = points[0];
+  let bestDist = -1;
+  for (const p of points) {
+    const d = enemies.length
+      ? Math.min(...enemies.map((e) => Math.hypot(e.x - p.x, e.y - p.y)))
+      : Infinity;
+    if (d > bestDist) { bestDist = d; best = p; }
+  }
+  return best;
+}
+
+// --- Deathmatch clock ---------------------------------------------------------------
+
+function stepMatchTimer(state) {
+  state.matchTimer -= 1;
+  if (state.matchTimer > 0) return;
+  state.phase = 'ended';
+  state.endTimer = ENDED_LINGER_FRAMES;
+  state.projectiles = [];
+  const ranked = Object.values(state.fighters)
+    .sort((a, b) => b.kills - a.kills || a.deaths - b.deaths);
+  const top = ranked[0];
+  const tied = ranked[1] && ranked[1].kills === top.kills && ranked[1].deaths === top.deaths;
+  state.winnerId = tied ? null : top.id; // dead heat on kills AND deaths = draw
+  state.events.push({ type: 'matchEnd', winnerId: state.winnerId });
+}
+
+// --- Gun game ladder ---------------------------------------------------------------
+
+function advanceLadder(state, attacker, mode) {
+  if (attacker.ladderLevel >= mode.ladder.length - 1) {
+    // A kill with the final rung (fists) takes the match — even posthumously.
+    state.phase = 'ended';
+    state.endTimer = ENDED_LINGER_FRAMES;
+    state.winnerId = attacker.id;
+    state.projectiles = [];
+    state.events.push({ type: 'matchEnd', winnerId: attacker.id });
+    return;
+  }
+  attacker.ladderLevel += 1;
+  attacker.weaponId = mode.ladder[attacker.ladderLevel];
+  attacker.fireCooldown = 0;
+  attacker.chargeFrames = 0;
+  state.events.push({
+    type: 'ladderUp', id: attacker.id,
+    level: attacker.ladderLevel, weaponId: attacker.weaponId,
+  });
+}
+
+// --- Hot potato ---------------------------------------------------------------------
+
+function armBomb(state, mode) {
+  const alive = Object.values(state.fighters).filter((f) => f.alive);
+  const carrier = alive[Math.floor(nextRandom(state) * alive.length)];
+  state.bomb = { carrierId: carrier.id, fuse: mode.bomb.initialFuse };
+  state.events.push({ type: 'bombArm', carrierId: carrier.id, fuse: state.bomb.fuse, x: carrier.x, y: carrier.y });
+}
+
+// After an explosion (or the carrier dying some other way) the bomb jumps to a
+// survivor with a fresh, shorter fuse — unless only one is left (round over).
+function rearmBomb(state, mode, excludeId = null) {
+  const alive = Object.values(state.fighters)
+    .filter((f) => f.alive && f.id !== excludeId);
+  if (alive.length <= 1) {
+    state.bomb = null; // checkRoundEnd awards the round right after
+    return;
+  }
+  const carrier = alive[Math.floor(nextRandom(state) * alive.length)];
+  state.bomb = { carrierId: carrier.id, fuse: mode.bomb.rearmFuse };
+  state.events.push({ type: 'bombArm', carrierId: carrier.id, fuse: state.bomb.fuse, x: carrier.x, y: carrier.y });
+}
+
+function passBomb(state, mode, from, to) {
+  state.bomb.carrierId = to.id;
+  from.bombImmunity = mode.bomb.passImmunity; // can't be handed straight back
+  state.events.push({ type: 'bombPass', fromId: from.id, toId: to.id, fuse: state.bomb.fuse, x: to.x, y: to.y });
+}
+
+function stepBomb(state, mode) {
+  for (const f of Object.values(state.fighters)) {
+    if (f.bombImmunity > 0) f.bombImmunity -= 1;
+  }
+  if (!state.bomb) return;
+
+  const carrier = state.fighters[state.bomb.carrierId];
+  if (!carrier || !carrier.alive) {
+    // Carrier died this tick without killFighter re-arming (shouldn't happen,
+    // but a dangling bomb would soft-lock the round).
+    rearmBomb(state, mode, state.bomb.carrierId);
+    return;
+  }
+
+  // Touch pass: brushing a non-immune fighter hands the bomb over.
+  for (const other of Object.values(state.fighters)) {
+    if (other.id === carrier.id || !other.alive || other.bombImmunity > 0) continue;
+    if (Math.abs(other.x - carrier.x) < FIGHTER_HURTBOX.w
+      && Math.abs(other.y - carrier.y) < FIGHTER_HURTBOX.h) {
+      passBomb(state, mode, carrier, other);
+      break;
+    }
+  }
+
+  state.bomb.fuse -= 1;
+  if (state.bomb.fuse <= 0) {
+    const holder = state.fighters[state.bomb.carrierId];
+    state.events.push({ type: 'bombExplode', x: holder.x, y: holder.y });
+    killFighter(state, holder, null); // re-arms via the carrier-death path
+  }
 }
 
 // --- Weapon drops ---------------------------------------------------------------
@@ -708,6 +895,7 @@ function checkRoundEnd(state) {
   state.phase = 'roundEnd';
   state.roundEndTimer = ROUND_END_LINGER;
   state.projectiles = [];
+  state.bomb = null; // no fuse ticking under the banner
   state.events.push({
     type: 'roundEnd',
     winnerId: state.roundWinnerId,

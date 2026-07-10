@@ -9,6 +9,7 @@ import {
 } from '/shared/constants.js';
 import { WEAPONS } from '/shared/weapons.js';
 import { getLevel, worldSize } from '/shared/levels.js';
+import { getMode } from '/shared/modes.js';
 
 const HEAD_R = 8;
 
@@ -196,6 +197,19 @@ export class Renderer {
       case 'throw':
         this.effects.push({ type: 'punch', x: ev.x, y: ev.y, age: 0, life: 6 });
         break;
+      case 'respawn':
+        this.ragdolls.delete(ev.id); // the corpse is back on its feet
+        this.effects.push({ type: 'bounceRing', x: ev.x, y: ev.y, age: 0, life: 14 });
+        break;
+      case 'bombArm':
+      case 'bombPass':
+        this.effects.push({ type: 'hitspark', x: ev.x, y: ev.y, age: 0, life: 10 });
+        break;
+      case 'bombExplode':
+        this.effects.push({ type: 'explosion', x: ev.x, y: ev.y, radius: 80, age: 0, life: 18 });
+        this.addShake(16);
+        this.triggerHitStop(4);
+        break;
     }
   }
 
@@ -239,6 +253,7 @@ export class Renderer {
       if (fighter.alive) this.drawFighter(fighter, state.tick ?? 0, level);
       else if (!this.ragdolls.has(fighter.id)) this.drawCorpse(fighter); // fallback if we missed the death event
     }
+    this.drawBombCarrier(state);
     for (const p of state.projectiles ?? []) this.drawProjectile(p);
     this.drawEffects();
     if (this.debug) this.drawDebug(state);
@@ -246,6 +261,7 @@ export class Renderer {
 
     // Screen space: HUD and banners are pinned to the view.
     this.drawHUD(state);
+    if (state.matchTimer != null && state.phase === 'playing') this.drawMatchClock(state);
     if (state.phase === 'countdown') this.drawCountdown(state);
     if (state.phase === 'roundEnd') this.drawRoundBanner(state);
     if (state.phase === 'ended') this.drawWinner(state);
@@ -413,6 +429,9 @@ export class Renderer {
   drawFighter(f, tick, level) {
     const { ctx } = this;
 
+    // Spawn protection reads as a flicker.
+    if ((f.invulnFrames ?? 0) > 0) ctx.globalAlpha = tick % 8 < 4 ? 0.35 : 0.8;
+
     // Laser sight is drawn in world space, under the figure, before any squash.
     if (f.weaponId === 'sniper' && level) this.drawLaserSight(f, level);
 
@@ -494,6 +513,50 @@ export class Renderer {
     ctx.font = 'bold 11px system-ui';
     ctx.textAlign = 'center';
     ctx.fillText(f.name, f.x, top - 24);
+    ctx.textAlign = 'left';
+    ctx.globalAlpha = 1;
+  }
+
+  // Hot potato: the ticking bomb above the carrier plus an urgency ring whose
+  // pulse speeds up as the fuse runs down.
+  drawBombCarrier(state) {
+    const bomb = state.bomb;
+    if (!bomb) return;
+    const carrier = state.fighters[bomb.carrierId];
+    if (!carrier || !carrier.alive) return;
+    const { ctx } = this;
+    const tick = state.tick ?? 0;
+    const seconds = Math.ceil(Math.max(0, bomb.fuse) / TICK_RATE);
+    const urgency = clampNum(1 - bomb.fuse / 600, 0, 1);
+    const pulse = 0.5 + 0.5 * Math.sin(tick * (0.15 + urgency * 0.4));
+
+    // Ring around the carrier.
+    ctx.strokeStyle = `rgba(255, 80, 60, ${0.35 + 0.45 * pulse})`;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(carrier.x, carrier.y, 46 + pulse * 6, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Bomb over the head with the fuse countdown.
+    const by = carrier.y - FIGHTER_HURTBOX.h / 2 - 44;
+    ctx.fillStyle = '#1b1d26';
+    ctx.beginPath();
+    ctx.arc(carrier.x, by, 9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#ffb347';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(carrier.x + 4, by - 7);
+    ctx.lineTo(carrier.x + 9, by - 13);
+    ctx.stroke();
+    ctx.fillStyle = pulse > 0.6 ? '#ffd24d' : '#ff6b4d'; // spark flicker
+    ctx.beginPath();
+    ctx.arc(carrier.x + 9, by - 13, 2.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 14px system-ui';
+    ctx.textAlign = 'center';
+    ctx.fillText(String(seconds), carrier.x, by - 20);
     ctx.textAlign = 'left';
   }
 
@@ -849,6 +912,7 @@ export class Renderer {
 
   drawHUD(state) {
     const { ctx } = this;
+    const mode = getMode(state.modeId);
     const fighters = Object.values(state.fighters);
     const slotW = 210;
     const startX = (STAGE.width - fighters.length * slotW) / 2;
@@ -866,27 +930,60 @@ export class Renderer {
       ctx.font = 'bold 14px system-ui';
       ctx.fillText(f.name + (f.weaponId ? ` · ${WEAPONS[f.weaponId].name}` : ''), x + 20, y + 21);
 
-      // HP bar.
+      // HP bar — or the respawn countdown while waiting to come back.
       const barW = slotW - 40;
-      ctx.fillStyle = 'rgba(255,255,255,0.12)';
-      ctx.fillRect(x + 20, y + 30, barW, 8);
-      ctx.fillStyle = f.alive ? hpColor(f.hp) : '#555';
-      ctx.fillRect(x + 20, y + 30, barW * Math.max(0, f.hp) / MAX_HP, 8);
+      if (!f.alive && (f.respawnTimer ?? 0) > 0) {
+        ctx.fillStyle = 'rgba(255,255,255,0.6)';
+        ctx.font = '12px system-ui';
+        ctx.fillText(`back in ${Math.ceil(f.respawnTimer / TICK_RATE)}…`, x + 20, y + 38);
+      } else {
+        ctx.fillStyle = 'rgba(255,255,255,0.12)';
+        ctx.fillRect(x + 20, y + 30, barW, 8);
+        ctx.fillStyle = f.alive ? hpColor(f.hp) : '#555';
+        ctx.fillRect(x + 20, y + 30, barW * Math.max(0, f.hp) / MAX_HP, 8);
+      }
 
-      // Round-win pips.
-      for (let w = 0; w < ROUND_WINS_TARGET; w++) {
-        ctx.beginPath();
-        ctx.arc(x + 26 + w * 16, y + 50, 5, 0, Math.PI * 2);
-        if (w < f.roundWins) {
-          ctx.fillStyle = f.color;
-          ctx.fill();
-        } else {
-          ctx.strokeStyle = 'rgba(255,255,255,0.25)';
-          ctx.lineWidth = 1.5;
-          ctx.stroke();
+      // Bottom row is the mode's score: round pips, K/D, or the weapon ladder.
+      if (mode.winCondition === 'kills') {
+        ctx.fillStyle = 'rgba(255,255,255,0.85)';
+        ctx.font = 'bold 13px system-ui';
+        ctx.fillText(`K ${f.kills ?? 0} · D ${f.deaths ?? 0}`, x + 20, y + 54);
+      } else {
+        const pips = mode.ladder ? mode.ladder.length : ROUND_WINS_TARGET;
+        const filled = mode.ladder ? f.ladderLevel ?? 0 : f.roundWins;
+        for (let w = 0; w < pips; w++) {
+          ctx.beginPath();
+          ctx.arc(x + 26 + w * 16, y + 50, 5, 0, Math.PI * 2);
+          if (w < filled) {
+            ctx.fillStyle = f.color;
+            ctx.fill();
+          } else {
+            ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+          }
         }
       }
     });
+  }
+
+  // Deathmatch clock, top-center; goes red and pulses inside the last 10 s.
+  drawMatchClock(state) {
+    const { ctx } = this;
+    const total = Math.max(0, Math.ceil(state.matchTimer / TICK_RATE));
+    const text = `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+    const urgent = total <= 10;
+    ctx.fillStyle = 'rgba(10, 12, 20, 0.75)';
+    ctx.beginPath();
+    ctx.roundRect(STAGE.width / 2 - 46, 14, 92, 36, 8);
+    ctx.fill();
+    ctx.fillStyle = urgent
+      ? `rgba(255, 80, 60, ${0.7 + 0.3 * Math.sin((state.tick ?? 0) * 0.3)})`
+      : '#ffffff';
+    ctx.font = 'bold 22px system-ui';
+    ctx.textAlign = 'center';
+    ctx.fillText(text, STAGE.width / 2, 40);
+    ctx.textAlign = 'left';
   }
 
   drawCountdown(state) {
@@ -894,10 +991,13 @@ export class Renderer {
     const seconds = Math.ceil((state.countdownTimer ?? 0) / TICK_RATE);
     ctx.fillStyle = 'rgba(0,0,0,0.35)';
     ctx.fillRect(0, 0, STAGE.width, STAGE.height);
+    const mode = getMode(state.modeId);
     ctx.fillStyle = '#ffffff';
     ctx.textAlign = 'center';
     ctx.font = 'bold 28px system-ui';
-    ctx.fillText(`ROUND ${state.roundNumber ?? 1}`, STAGE.width / 2, STAGE.height / 2 - 90);
+    // Continuous modes have no rounds — announce the mode instead.
+    ctx.fillText(mode.rounds ? `ROUND ${state.roundNumber ?? 1}` : mode.name.toUpperCase(),
+      STAGE.width / 2, STAGE.height / 2 - 90);
     ctx.font = 'bold 110px system-ui';
     ctx.fillText(seconds > 0 ? String(seconds) : 'GO!', STAGE.width / 2, STAGE.height / 2);
     ctx.fillStyle = 'rgba(255,255,255,0.7)';
@@ -985,6 +1085,9 @@ export function interpolateSnapshots(a, b, t) {
     levelIndex: b.levelIndex,
     roundWinnerId: b.roundWinnerId,
     winnerId: b.winnerId,
+    modeId: b.modeId,
+    matchTimer: b.matchTimer,
+    bomb: b.bomb,
     tick: b.tick,
     fighters,
     drops: lerpBy(a.drops ?? [], b.drops ?? []),

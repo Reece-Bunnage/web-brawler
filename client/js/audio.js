@@ -81,6 +81,11 @@ export class AudioManager {
       case 'dash': this._dash(); break;
       case 'bounce': this._bounce(); break;
       case 'pickup': this._pickup(); break;
+      case 'ladderUp': this._pickup(); break;
+      case 'respawn': this._respawn(); break;
+      case 'bombArm': this._bombPass(); break;
+      case 'bombPass': this._bombPass(); break;
+      case 'bombExplode': this._explosion({ radius: 90 }); break;
       case 'roundStart': this._go(); break;
       case 'roundEnd': this._roundEnd(); break;
       case 'matchEnd': this._matchEnd(); break;
@@ -173,6 +178,17 @@ export class AudioManager {
   _pickup() {
     this._tone({ freq: 523, type: 'square', decay: 0.08, gain: 0.2 });          // C5
     this._tone({ freq: 784, type: 'square', decay: 0.1, gain: 0.2, t: 0.07 });  // G5
+  }
+
+  _respawn() {
+    // Rising shimmer: back in the fight.
+    this._tone({ freq: 392, freqEnd: 784, type: 'triangle', decay: 0.16, gain: 0.2 });
+  }
+
+  _bombPass() {
+    // Ominous low blip — the bomb changed hands (or just armed).
+    this._tone({ freq: 220, freqEnd: 140, type: 'sawtooth', decay: 0.12, gain: 0.24 });
+    this._tone({ freq: 660, type: 'square', decay: 0.05, gain: 0.14 });
   }
 
   _go() {

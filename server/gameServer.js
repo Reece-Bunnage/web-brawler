@@ -5,6 +5,7 @@
 import { createInitialState, stepGame, EMPTY_INPUT } from '../shared/simulation.js';
 import { TICK_RATE, SNAPSHOT_RATE, DT } from '../shared/constants.js';
 import { matchStart, snapshot, matchEnd } from '../shared/protocol.js';
+import { standingsForMode } from '../shared/modes.js';
 
 const TICK_MS = 1000 / TICK_RATE;
 const TICKS_PER_SNAPSHOT = TICK_RATE / SNAPSHOT_RATE;
@@ -12,12 +13,12 @@ const TICKS_PER_SNAPSHOT = TICK_RATE / SNAPSHOT_RATE;
 const MAX_ACCUMULATED_MS = 250;
 
 export class GameServer {
-  constructor(room, playerConfigs) {
+  constructor(room, playerConfigs, modeId = 'classic') {
     this.room = room;
     // Clock-seeded so every match gets a fresh level rotation and drop
     // pattern; GAME_SEED pins it for integration tests.
     const seed = process.env.GAME_SEED ? Number(process.env.GAME_SEED) : (Date.now() >>> 0);
-    this.state = createInitialState(playerConfigs, seed);
+    this.state = createInitialState(playerConfigs, seed, null, modeId);
     this.inputs = {};   // playerId → latest input object (persists across ticks §11)
     this.lastSeq = {};  // playerId → highest seq seen (stale/out-of-order dropped)
     this.pendingEvents = []; // events accumulated between snapshots, drained on send
@@ -28,7 +29,7 @@ export class GameServer {
     for (const cfg of playerConfigs) {
       this.inputs[cfg.id] = { ...EMPTY_INPUT };
       this.lastSeq[cfg.id] = -1;
-      this.room.sendTo(cfg.id, matchStart('main', playerConfigs, cfg.id));
+      this.room.sendTo(cfg.id, matchStart('main', playerConfigs, cfg.id, this.state.modeId));
     }
   }
 
@@ -124,6 +125,11 @@ export class GameServer {
       hp: Math.round(f.hp),
       alive: f.alive,
       roundWins: f.roundWins,
+      kills: f.kills,
+      deaths: f.deaths,
+      ladderLevel: f.ladderLevel,
+      respawnTimer: f.respawnTimer,
+      invulnFrames: f.invulnFrames,
       weaponId: f.weaponId,
       chargeFrames: f.chargeFrames,
     }));
@@ -142,6 +148,9 @@ export class GameServer {
       levelIndex: this.state.levelIndex,
       roundWinnerId: this.state.roundWinnerId,
       winnerId: this.state.winnerId,
+      modeId: this.state.modeId,
+      matchTimer: this.state.matchTimer,
+      bomb: this.state.bomb,
       projectiles,
       drops,
     }));
@@ -149,16 +158,8 @@ export class GameServer {
 
   finish() {
     this.stop();
-    const standings = Object.values(this.state.fighters)
-      .slice()
-      .sort((a, b) => b.roundWins - a.roundWins)
-      .map((f) => ({
-        id: f.id,
-        name: f.name,
-        color: f.color,
-        roundWins: f.roundWins,
-      }));
-    this.room.broadcast(matchEnd(this.state.winnerId, standings));
+    const standings = standingsForMode(this.state.fighters, this.state.modeId, this.state.winnerId);
+    this.room.broadcast(matchEnd(this.state.winnerId, standings, this.state.modeId));
     this.room.onMatchOver();
     console.log(`[game] match over, winner: ${this.state.winnerId ?? 'none'}`);
   }

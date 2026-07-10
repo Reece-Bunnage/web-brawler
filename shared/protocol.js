@@ -5,6 +5,7 @@ export const MSG = {
   // Client → Server
   JOIN: 'JOIN',
   READY: 'READY',
+  SET_MODE: 'SET_MODE',
   START_MATCH: 'START_MATCH',
   INPUT: 'INPUT',
   // Server → Client
@@ -19,16 +20,17 @@ export const MSG = {
 // Client → Server
 export const join = (name) => ({ type: MSG.JOIN, name });
 export const ready = (isReady) => ({ type: MSG.READY, ready: isReady });
+export const setMode = (modeId) => ({ type: MSG.SET_MODE, modeId }); // host only
 export const startMatch = () => ({ type: MSG.START_MATCH });
 export const inputMsg = (seq, input) => ({ type: MSG.INPUT, seq, input });
 
 // Server → Client
 export const welcome = (yourId) => ({ type: MSG.WELCOME, yourId });
-export const lobbyState = (players, hostId) => ({ type: MSG.LOBBY_STATE, players, hostId });
-export const matchStart = (stageId, fighters, yourId) => ({ type: MSG.MATCH_START, stageId, fighters, yourId });
+export const lobbyState = (players, hostId, modeId) => ({ type: MSG.LOBBY_STATE, players, hostId, modeId });
+export const matchStart = (stageId, fighters, yourId, modeId) => ({ type: MSG.MATCH_START, stageId, fighters, yourId, modeId });
 export const snapshot = (tick, phase, fighters, events, extra = {}) =>
   ({ type: MSG.SNAPSHOT, tick, phase, fighters, events, ...extra });
-export const matchEnd = (winnerId, standings) => ({ type: MSG.MATCH_END, winnerId, standings });
+export const matchEnd = (winnerId, standings, modeId) => ({ type: MSG.MATCH_END, winnerId, standings, modeId });
 export const errorMsg = (message) => ({ type: MSG.ERROR, message });
 
 export function encode(msg) {
