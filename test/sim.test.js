@@ -9,7 +9,7 @@ import {
   WEAPON_SPAWN_INTERVAL, PUNCH_DAMAGE,
   DASH_FRAMES, DASH_COOLDOWN, AIR_DASHES, WALL_SLIDE_SPEED,
   SAW_DAMAGE, HAZARD_HIT_COOLDOWN, BOUNCE_POWER, JUMP_VELOCITY,
-  THROW_DAMAGE,
+  THROW_DAMAGE, GUN_MOUNT_Y, STAGE,
 } from '../shared/constants.js';
 import { LEVELS } from '../shared/levels.js';
 
@@ -414,10 +414,10 @@ test('air dash suspends gravity and is refreshed on landing', () => {
 });
 
 test('holding into a wall slides slowly and wall jump kicks away', () => {
-  let s = newState(1, 1); // Twin Towers: left tower wall at x=160
+  let s = newState(1, 1); // Twin Towers: left tower spans x=160.., y=700..1080
   s.nextSpawnTimer = 100000;
   s.fighters.p1.x = 130;
-  s.fighters.p1.y = 520;
+  s.fighters.p1.y = 760;
   s.fighters.p1.vy = 0;
   s.fighters.p1.onGround = false;
   s = run(s, 20, () => ({ p1: input({ right: true }) }));
@@ -475,6 +475,24 @@ test('grenade is a pickup weapon that detonates on impact', () => {
   s = run(s, 30); // arc into p2 and explode
   assert.ok(s.fighters.p2.hp < MAX_HP, 'grenade explosion damaged p2');
   assert.ok(!s.projectiles.some((p) => p.weaponId === 'grenade'), 'grenade consumed on detonation');
+});
+
+test('bullets leave from the gun (shoulder height), not the body center', () => {
+  let s = duelState();
+  arm(s.fighters.p1, 'pistol');
+  s = run(s, 1, () => ({ p1: input({ shoot: true, aimX: 1 }) }));
+  const bullet = s.projectiles[0];
+  assert.ok(bullet, 'a bullet spawned');
+  assert.ok(bullet.y < s.fighters.p1.y, 'bullet originates above the fighter center');
+  assert.ok(Math.abs(bullet.y - (s.fighters.p1.y + GUN_MOUNT_Y)) < 1.5, 'at the gun-mount height');
+});
+
+test('some levels are taller than the view for vertical play', () => {
+  const tall = LEVELS.filter((l) => (l.height ?? STAGE.height) > STAGE.height);
+  assert.ok(tall.length >= 2, `at least two levels extend beyond one screen (got ${tall.length})`);
+  for (const l of tall) {
+    assert.ok(l.spawnPoints.every((sp) => sp.y <= l.height), `${l.id} spawns within the taller world`);
+  }
 });
 
 // --- Sniper (charge weapon) --------------------------------------------------

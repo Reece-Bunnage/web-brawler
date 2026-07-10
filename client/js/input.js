@@ -5,24 +5,24 @@
 
 import { STAGE } from '/shared/constants.js';
 
-// KeyboardEvent.code → [playerIndex, field]. Flat table so a future remapping
-// UI only has to swap this object out.
+// KeyboardEvent.code → one or more [playerIndex, field] bindings. A value may
+// be a single [player, field] pair or an array of them (so one key can drive
+// two fields — e.g. W both jumps and aims up). Flat table so a future
+// remapping UI only has to swap this object out.
 export const DEFAULT_BINDINGS = {
-  // Player 1 (WASD cluster)
+  // Player 1 (WASD cluster). W is jump + aim-up (dual purpose).
   KeyA: [0, 'left'],
   KeyD: [0, 'right'],
-  KeyW: [0, 'up'],
+  KeyW: [[0, 'jump'], [0, 'up']],
   KeyS: [0, 'down'],
-  Space: [0, 'jump'],
   KeyF: [0, 'shoot'],
   ShiftLeft: [0, 'dash'],
   KeyQ: [0, 'throw'],
-  // Player 2 (arrow cluster)
+  // Player 2 (arrow cluster). Up Arrow is jump + aim-up.
   ArrowLeft: [1, 'left'],
   ArrowRight: [1, 'right'],
-  ArrowUp: [1, 'up'],
+  ArrowUp: [[1, 'jump'], [1, 'up']],
   ArrowDown: [1, 'down'],
-  Enter: [1, 'jump'],
   Period: [1, 'shoot'],
   Slash: [1, 'dash'],
   Comma: [1, 'throw'],
@@ -67,8 +67,12 @@ export class InputManager {
     const binding = this.bindings[e.code];
     if (!binding) return;
     e.preventDefault();
-    const [playerIndex, field] = binding;
-    this.players[playerIndex][field] = e.type === 'keydown';
+    const down = e.type === 'keydown';
+    // A binding is either a single [player, field] pair or an array of them.
+    const pairs = Array.isArray(binding[0]) ? binding : [binding];
+    for (const [playerIndex, field] of pairs) {
+      this.players[playerIndex][field] = down;
+    }
   }
 
   // The canvas is CSS-scaled; map client coords back to canvas (view) pixels.

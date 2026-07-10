@@ -9,7 +9,7 @@ import {
   MOVE_SPEED, JUMP_VELOCITY, AIR_JUMPS,
   DASH_SPEED, DASH_FRAMES, DASH_COOLDOWN, AIR_DASHES,
   WALL_SLIDE_SPEED, WALL_JUMP_VY, WALL_JUMP_KICK,
-  FIGHTER_HURTBOX, MAX_HP, FIGHTER_COLORS, HIT_FLINCH_FRAMES,
+  FIGHTER_HURTBOX, GUN_MOUNT_Y, MAX_HP, FIGHTER_COLORS, HIT_FLINCH_FRAMES,
   PUNCH_DAMAGE, PUNCH_RANGE, PUNCH_RADIUS, PUNCH_KNOCKBACK, PUNCH_COOLDOWN,
   SAW_DAMAGE, SAW_KNOCKBACK, HAZARD_HIT_COOLDOWN, BOUNCE_POWER,
   THROW_SPEED, THROW_DAMAGE, THROW_KNOCKBACK, THROW_LIFE,
@@ -355,7 +355,7 @@ function tryFire(state, fighter, input) {
 
   const baseAngle = Math.atan2(fighter.aimY, fighter.aimX);
   const muzzleX = fighter.x + fighter.aimX * weapon.barrel;
-  const muzzleY = fighter.y + fighter.aimY * weapon.barrel;
+  const muzzleY = fighter.y + GUN_MOUNT_Y + fighter.aimY * weapon.barrel;
 
   for (let i = 0; i < weapon.projectileCount; i++) {
     const angle = baseAngle + (nextRandom(state) - 0.5) * 2 * weapon.spread;
@@ -398,7 +398,7 @@ function fireChargedShot(state, fighter, weapon) {
   const angle = Math.atan2(fighter.aimY, fighter.aimX);
   const speed = weapon.projectileSpeed * (0.7 + 0.3 * ratio);
   const muzzleX = fighter.x + fighter.aimX * weapon.barrel;
-  const muzzleY = fighter.y + fighter.aimY * weapon.barrel;
+  const muzzleY = fighter.y + GUN_MOUNT_Y + fighter.aimY * weapon.barrel;
   state.projectiles.push({
     id: state.nextEntityId++,
     ownerId: fighter.id,
@@ -434,14 +434,14 @@ function throwWeapon(state, fighter) {
     weaponId,
     kind: 'thrown',
     x: fighter.x + fighter.aimX * 22,
-    y: fighter.y + fighter.aimY * 22,
+    y: fighter.y + GUN_MOUNT_Y + fighter.aimY * 22,
     vx: fighter.aimX * THROW_SPEED,
     vy: fighter.aimY * THROW_SPEED - 2, // slight loft
     life: THROW_LIFE,
     spin: 0,
     spinRate: spin,
   });
-  state.events.push({ type: 'throw', id: fighter.id, weaponId, x: fighter.x, y: fighter.y });
+  state.events.push({ type: 'throw', id: fighter.id, weaponId, x: fighter.x, y: fighter.y + GUN_MOUNT_Y });
 }
 
 // --- Projectiles ---------------------------------------------------------------

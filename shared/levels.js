@@ -33,6 +33,9 @@ export const LEVELS = [
     platforms: [
       { x: 280, y: 440, w: 220, h: 12 },
       { x: 780, y: 440, w: 220, h: 12 },
+      { x: 540, y: 340, w: 200, h: 12 }, // center step up
+      { x: 290, y: 250, w: 160, h: 12 }, // high corners
+      { x: 830, y: 250, w: 160, h: 12 },
     ],
     spawnPoints: [
       { x: 340, y: 600 }, { x: 940, y: 600 }, { x: 540, y: 600 }, { x: 740, y: 600 },
@@ -43,15 +46,19 @@ export const LEVELS = [
   {
     id: 'towers',
     name: 'Twin Towers',
+    height: 1080, // taller than the view — the camera pans vertically
     solids: [
-      { x: 160, y: 480, w: 340, h: 240 },
-      { x: 780, y: 480, w: 340, h: 240 },
+      { x: 160, y: 700, w: 300, h: 380 }, // left tower (deadly gap between)
+      { x: 820, y: 700, w: 300, h: 380 }, // right tower
     ],
     platforms: [
-      { x: 540, y: 360, w: 200, h: 12 }, // bridge over the deadly gap
+      { x: 540, y: 860, w: 200, h: 12 }, // stepping stone over the pit
+      { x: 540, y: 580, w: 200, h: 12 }, // climb up the middle from the tops
+      { x: 560, y: 440, w: 180, h: 12 },
+      { x: 540, y: 300, w: 200, h: 12 }, // high perch
     ],
     spawnPoints: [
-      { x: 260, y: 480 }, { x: 1020, y: 480 }, { x: 420, y: 480 }, { x: 860, y: 480 },
+      { x: 260, y: 700 }, { x: 1020, y: 700 }, { x: 380, y: 700 }, { x: 900, y: 700 },
     ],
     dropRange: { min: 200, max: 1080 },
     accent: '#4a3f55',
@@ -67,6 +74,9 @@ export const LEVELS = [
     platforms: [
       { x: 390, y: 400, w: 100, h: 12 },
       { x: 790, y: 400, w: 100, h: 12 },
+      { x: 240, y: 300, w: 120, h: 12 }, // upper ring
+      { x: 920, y: 300, w: 120, h: 12 },
+      { x: 590, y: 220, w: 120, h: 12 }, // top island
     ],
     spawnPoints: [
       { x: 160, y: 560 }, { x: 1060, y: 560 }, { x: 560, y: 480 }, { x: 720, y: 480 },
@@ -84,6 +94,9 @@ export const LEVELS = [
     ],
     platforms: [
       { x: 530, y: 480, w: 220, h: 12 },
+      { x: 230, y: 320, w: 180, h: 12 }, // rim climbs above the walls
+      { x: 870, y: 320, w: 180, h: 12 },
+      { x: 540, y: 300, w: 200, h: 12 }, // high center span
     ],
     spawnPoints: [
       { x: 220, y: 460 }, { x: 1060, y: 460 }, { x: 500, y: 640 }, { x: 780, y: 640 },
@@ -94,16 +107,24 @@ export const LEVELS = [
   {
     id: 'skyline',
     name: 'Skyline',
-    solids: [{ x: 490, y: 620, w: 300, h: 100 }],
+    height: 1080, // vertical cityscape — the camera pans up the towers
+    solids: [
+      { x: 120, y: 900, w: 220, h: 180 }, // left rooftop
+      { x: 520, y: 820, w: 240, h: 260 }, // taller center building
+      { x: 940, y: 900, w: 220, h: 180 }, // right rooftop
+    ],
     platforms: [
-      { x: 280, y: 520, w: 180, h: 12 },
-      { x: 820, y: 520, w: 180, h: 12 },
-      { x: 140, y: 400, w: 180, h: 12 },
-      { x: 960, y: 400, w: 180, h: 12 },
-      { x: 540, y: 300, w: 200, h: 12 },
+      { x: 360, y: 760, w: 160, h: 12 }, // ledges between the buildings
+      { x: 760, y: 760, w: 160, h: 12 },
+      { x: 240, y: 620, w: 180, h: 12 },
+      { x: 860, y: 620, w: 180, h: 12 },
+      { x: 520, y: 540, w: 200, h: 12 },
+      { x: 320, y: 400, w: 160, h: 12 },
+      { x: 800, y: 400, w: 160, h: 12 },
+      { x: 540, y: 280, w: 200, h: 12 }, // penthouse perch
     ],
     spawnPoints: [
-      { x: 560, y: 620 }, { x: 720, y: 620 }, { x: 360, y: 520 }, { x: 900, y: 520 },
+      { x: 230, y: 900 }, { x: 1050, y: 900 }, { x: 560, y: 820 }, { x: 720, y: 820 },
     ],
     dropRange: { min: 150, max: 1130 },
     accent: '#3f4a5c',
@@ -122,6 +143,9 @@ export const LEVELS = [
       { x: 640, y: 480, w: 140, h: 12 },    // bridges over the side gaps
       { x: 1780, y: 480, w: 140, h: 12 },
       { x: 1150, y: 330, w: 260, h: 12 },   // crow's nest above the pillar
+      { x: 360, y: 360, w: 140, h: 12 },    // climb up the mesas
+      { x: 2060, y: 360, w: 140, h: 12 },
+      { x: 1200, y: 170, w: 160, h: 12 },   // lookout above the nest
     ],
     spawnPoints: [
       { x: 300, y: 560 }, { x: 2260, y: 560 }, { x: 1000, y: 640 }, { x: 1560, y: 640 },
@@ -139,6 +163,8 @@ export const LEVELS = [
       { x: 250, y: 470, w: 200, h: 12 },
       { x: 830, y: 470, w: 200, h: 12 },
       { x: 540, y: 340, w: 200, h: 12 }, // high center (reach via bounce pad)
+      { x: 300, y: 240, w: 160, h: 12 }, // upper catwalks
+      { x: 820, y: 240, w: 160, h: 12 },
     ],
     hazards: [
       { type: 'saw', x: 470, y: 600, r: 32 },
@@ -169,6 +195,9 @@ export const LEVELS = [
       { x: 560, y: 470, w: 180, h: 12 },
       { x: 1460, y: 470, w: 180, h: 12 },
       { x: 980, y: 440, w: 240, h: 12 }, // center overpass
+      { x: 300, y: 400, w: 160, h: 12 }, // side ascents
+      { x: 1740, y: 400, w: 160, h: 12 },
+      { x: 980, y: 250, w: 200, h: 12 }, // high gantry over the middle
     ],
     hazards: [
       { type: 'saw', x: 1100, y: 620, r: 34 }, // sunken-middle gate
@@ -202,6 +231,9 @@ export const LEVELS = [
       { x: 1440, y: 420, w: 180, h: 12 },
       { x: 1940, y: 460, w: 160, h: 12 },
       { x: 1180, y: 300, w: 240, h: 12 }, // high center perch
+      { x: 300, y: 320, w: 150, h: 12 },  // tall end climbs
+      { x: 2110, y: 320, w: 150, h: 12 },
+      { x: 1200, y: 160, w: 200, h: 12 }, // summit above the perch
     ],
     hazards: [
       { type: 'bounce', x: 780, y: 640, w: 90, h: 14 },

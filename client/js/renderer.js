@@ -4,7 +4,7 @@
 // only and fed in via addEvent().
 
 import {
-  STAGE, FIGHTER_HURTBOX, MAX_HP,
+  STAGE, FIGHTER_HURTBOX, GUN_MOUNT_Y, MAX_HP,
   ROUND_WINS_TARGET, TICK_RATE,
 } from '/shared/constants.js';
 import { WEAPONS } from '/shared/weapons.js';
@@ -524,7 +524,7 @@ export class Renderer {
     const dx = ax / len;
     const dy = ay / len;
     const ox = f.x + dx * weapon.barrel;
-    const oy = f.y + dy * weapon.barrel;
+    const oy = f.y + GUN_MOUNT_Y + dy * weapon.barrel;
 
     const maxDist = 2600;
     const step = 10;

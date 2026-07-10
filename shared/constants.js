@@ -38,6 +38,10 @@ export const BLAST_MARGIN = { side: 300, top: 400, bottom: 300 };
 
 // Stick figures
 export const FIGHTER_HURTBOX = { w: 30, h: 62 };   // head + body envelope
+// Muzzle/hand height above the fighter's center (~shoulder line), so shots and
+// thrown weapons leave from the gun (~3/4 up the body) rather than the middle.
+// Matches the renderer's shoulder line (NECK_Y).
+export const GUN_MOUNT_Y = -14;
 export const MAX_HP = 100;
 export const FIGHTER_COLORS = ['#4da6ff', '#ff6b4d', '#7dff7a', '#ffd24d'];
 export const HIT_FLINCH_FRAMES = 6;       // brief control loss when shot
