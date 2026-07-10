@@ -275,6 +275,7 @@ function applyMovementInput(state, fighter, input, level) {
       fighter.vy = JUMP_VELOCITY;
       fighter.onGround = false;
       fighter.dashFrames = 0; // jump cancels a dash
+      state.events.push({ type: 'jump', id: fighter.id, x: fighter.x, y: fighter.y, air: false });
     } else if (fighter.wallDir !== 0) {
       // Wall jump: free (doesn't spend an air jump), kicks away from the wall.
       fighter.vy = WALL_JUMP_VY;
@@ -286,6 +287,7 @@ function applyMovementInput(state, fighter, input, level) {
       fighter.vy = JUMP_VELOCITY;
       fighter.jumpsRemaining -= 1;
       fighter.dashFrames = 0;
+      state.events.push({ type: 'jump', id: fighter.id, x: fighter.x, y: fighter.y, air: true });
     }
   }
 

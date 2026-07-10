@@ -3,20 +3,52 @@ import { InputManager } from './input.js';
 import { Renderer, interpolateSnapshots } from './renderer.js';
 import { LocalGame } from './localGame.js';
 import { NetClient } from './net.js';
+import { AudioManager } from './audio.js';
 import * as ui from './ui.js';
 
 const canvas = document.getElementById('game');
 const renderer = new Renderer(canvas);
 const inputManager = new InputManager();
 inputManager.attach(canvas);
+const audio = new AudioManager();
 
-// F1 toggles the hitbox debug overlay.
+// Browsers block audio until a user gesture — unlock on the first key/click.
+const unlockAudio = () => audio.unlock();
+window.addEventListener('keydown', unlockAudio);
+window.addEventListener('pointerdown', unlockAudio);
+
+// F1 toggles the hitbox debug overlay; M toggles mute.
 window.addEventListener('keydown', (e) => {
   if (e.code === 'F1') {
     e.preventDefault();
     renderer.toggleDebug();
+  } else if (e.code === 'KeyM') {
+    e.preventDefault();
+    syncAudioControls(audio.toggleMute());
   }
 });
+
+// Minimal always-on audio control (mute + volume), bottom-left.
+const audioBar = document.createElement('div');
+audioBar.style.cssText = 'position:fixed;left:12px;bottom:12px;z-index:50;display:flex;align-items:center;gap:8px;'
+  + 'padding:6px 10px;border-radius:8px;background:rgba(10,12,20,0.6);font:12px system-ui;color:#cdd3ea;user-select:none';
+const muteBtn = document.createElement('button');
+muteBtn.style.cssText = 'background:none;border:none;cursor:pointer;font-size:16px;line-height:1';
+const volSlider = document.createElement('input');
+volSlider.type = 'range';
+volSlider.min = '0'; volSlider.max = '1'; volSlider.step = '0.05';
+volSlider.value = String(audio.volume);
+volSlider.style.cssText = 'width:80px;cursor:pointer';
+muteBtn.addEventListener('click', () => { audio.unlock(); syncAudioControls(audio.toggleMute()); });
+volSlider.addEventListener('input', () => { audio.unlock(); audio.setVolume(Number(volSlider.value)); syncAudioControls(audio.muted); });
+audioBar.append(muteBtn, volSlider);
+document.body.appendChild(audioBar);
+
+function syncAudioControls(muted) {
+  muteBtn.textContent = muted ? '🔇' : '🔊';
+  volSlider.style.opacity = muted ? '0.4' : '1';
+}
+syncAudioControls(audio.muted);
 
 let currentGame = null;   // LocalGame instance when playing locally
 let net = null;           // NetClient when online
@@ -46,6 +78,7 @@ function startLocalMatch() {
   currentGame = new LocalGame({
     inputManager,
     renderer,
+    audio,
     playerConfigs: [
       { id: 'p1', name: 'P1' },
       { id: 'p2', name: 'P2' },
@@ -148,7 +181,10 @@ function startOnlineMatch() {
     for (const snap of net.snapshots) {
       if (snap.tick <= lastEventTick) continue;
       lastEventTick = snap.tick;
-      for (const ev of snap.events) renderer.addEvent(ev);
+      for (const ev of snap.events) {
+        renderer.addEvent(ev);
+        audio.addEvent(ev);
+      }
     }
 
     const pair = net.getInterpolationPair();
@@ -158,6 +194,7 @@ function startOnlineMatch() {
       if (self) selfPos = { x: self.x, y: self.y };
       lastRenderState = state;
       renderer.draw(state);
+      audio.update(state);
     }
     onlineLoop = requestAnimationFrame(frame);
   };

@@ -12,9 +12,10 @@ const FRAME_MS = 1000 / TICK_RATE;
 const MAX_ACCUMULATED_MS = 250;
 
 export class LocalGame {
-  constructor({ inputManager, renderer, playerConfigs, onMatchEnd, seed }) {
+  constructor({ inputManager, renderer, audio, playerConfigs, onMatchEnd, seed }) {
     this.inputManager = inputManager;
     this.renderer = renderer;
+    this.audio = audio ?? null;
     this.onMatchEnd = onMatchEnd;
     this.state = createInitialState(playerConfigs, seed ?? (Date.now() >>> 0));
     this.running = false;
@@ -61,6 +62,7 @@ export class LocalGame {
     }
 
     this.renderer.draw(this.state);
+    this.audio?.update(this.state);
 
     if (this.state.phase === 'ended' && this.state.endTimer <= 0) {
       this.running = false;
@@ -71,6 +73,9 @@ export class LocalGame {
   }
 
   _handleEvents(events) {
-    for (const ev of events) this.renderer.addEvent(ev);
+    for (const ev of events) {
+      this.renderer.addEvent(ev);
+      this.audio?.addEvent(ev);
+    }
   }
 }
