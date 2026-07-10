@@ -69,6 +69,26 @@ try {
     assert.equal(ticks[i] - ticks[i - 1], 1, `consecutive ticks (${ticks[i - 1]} → ${ticks[i]})`);
   }
 
+  // Event floats are rounded on the wire (payload control under uzi fire):
+  // throw a few punches to generate events with coordinates.
+  alice.snapshots.length = 0;
+  for (let i = 0; i < 5; i++) {
+    send(alice, inputMsg(100 + i * 2, { ...EMPTY_INPUT, shoot: true, aimX: 1 }));
+    await sleep(30);
+    send(alice, inputMsg(101 + i * 2, { ...EMPTY_INPUT, aimX: 1 }));
+    await sleep(30);
+  }
+  await sleep(200);
+  const events = alice.snapshots.flatMap((s) => s.events);
+  assert.ok(events.some((e) => typeof e.x === 'number'), 'events with coordinates observed');
+  for (const e of events) {
+    for (const k of ['x', 'y', 'vx', 'vy']) {
+      if (typeof e[k] !== 'number') continue;
+      assert.ok(Math.abs(e[k] * 10 - Math.round(e[k] * 10)) < 1e-9,
+        `event ${e.type}.${k}=${e[k]} is rounded to 0.1`);
+    }
+  }
+
   console.log('netcode integration: all assertions passed');
 } finally {
   server.kill();

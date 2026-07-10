@@ -4,8 +4,10 @@
 
 import { MSG, encode, decode, join, ready, setMode, startMatch, inputMsg }
   from '/shared/protocol.js';
-import { SNAPSHOT_RATE, TICK_RATE, INTERP_MIN_MS, INTERP_MAX_MS, INTERP_GAP_MULT }
-  from '/shared/constants.js';
+import {
+  SNAPSHOT_RATE, TICK_RATE, INTERP_MIN_MS, INTERP_MAX_MS, INTERP_GAP_MULT,
+  INTERP_EASE_UP, INTERP_EASE_DOWN,
+} from '/shared/constants.js';
 
 // Seed for the adaptive interpolation delay before any gaps are measured
 // (also the behavior of old builds: render a fixed 100 ms in the past).
@@ -21,6 +23,7 @@ export class NetClient {
     this.snapshots = []; // [{ recvTime, tick, phase, fighters, ... }]
     this.interpDelay = INTERP_DELAY_MS; // adapts to measured snapshot jitter
     this._gaps = [];
+    this._sizes = []; // recent snapshot payload sizes (bytes) for the overlay
     this._lastSnapTime = null;
     // Callbacks assigned by main.js.
     this.onLobby = null;
@@ -54,20 +57,27 @@ export class NetClient {
       case MSG.MATCH_START:
         this.snapshots = [];
         this._gaps = [];
+        this._sizes = [];
         this._lastSnapTime = null;
         this.interpDelay = INTERP_DELAY_MS;
         this.onMatchStart?.(msg);
         break;
       case MSG.SNAPSHOT: {
         const now = performance.now();
+        this._sizes.push(raw.length ?? 0);
+        if (this._sizes.length > GAP_WINDOW) this._sizes.shift();
         if (this._lastSnapTime != null) {
           this._gaps.push(Math.min(now - this._lastSnapTime, GAP_CLAMP_MS));
           if (this._gaps.length > GAP_WINDOW) this._gaps.shift();
           // Ease toward 2× the p90 arrival gap: tight (≈33 ms) on a clean
           // LAN, widening under jitter so the buffer never starves.
+          // Asymmetric: a jitter spike raises the delay within ~100 ms
+          // (starvation is visible chop), but recovery takes seconds
+          // (a slightly stale view is invisible; oscillation is not).
           const target = Math.max(INTERP_MIN_MS,
             Math.min(INTERP_MAX_MS, INTERP_GAP_MULT * p90(this._gaps)));
-          this.interpDelay += (target - this.interpDelay) * 0.05;
+          const ease = target > this.interpDelay ? INTERP_EASE_UP : INTERP_EASE_DOWN;
+          this.interpDelay += (target - this.interpDelay) * ease;
         }
         this._lastSnapTime = now;
         this.snapshots.push({ ...msg, recvTime: now });
@@ -99,15 +109,20 @@ export class NetClient {
     this.send(inputMsg(seq, input));
   }
 
-  // Arrival-rate stats for the F2 overlay.
+  // Arrival-rate + payload stats for the F2 overlay.
   getNetStats() {
     const gaps = this._gaps;
     const mean = gaps.length ? gaps.reduce((a, b) => a + b, 0) / gaps.length : 0;
+    const meanSize = this._sizes.length
+      ? this._sizes.reduce((a, b) => a + b, 0) / this._sizes.length : 0;
+    const rate = mean > 0 ? 1000 / mean : 0;
     return {
-      snapRate: mean > 0 ? 1000 / mean : 0,
+      snapRate: rate,
       meanGap: mean,
       p90Gap: gaps.length ? p90(gaps) : 0,
       interpDelay: this.interpDelay,
+      snapKB: meanSize / 1024,
+      netKBs: (meanSize * rate) / 1024,
     };
   }
 

@@ -151,7 +151,16 @@ export class GameServer {
     const drops = this.state.drops.map((d) => ({
       id: d.id, weaponId: d.weaponId, x: r1(d.x), y: r1(d.y), landed: d.landed,
     }));
-    const events = this.pendingEvents;
+    // Events pass through from the sim with full-precision floats; round the
+    // wire copies (a burst of uzi shot/hit events would otherwise quadruple
+    // the payload with 17-digit coordinates). The sim events stay untouched.
+    const events = this.pendingEvents.map((ev) => {
+      const out = { ...ev };
+      for (const k of ['x', 'y', 'vx', 'vy']) {
+        if (typeof out[k] === 'number') out[k] = r1(out[k]);
+      }
+      return out;
+    });
     this.pendingEvents = [];
     this.room.broadcast(snapshot(this.state.tick, this.state.phase, fighters, events, {
       countdownTimer: this.state.countdownTimer,

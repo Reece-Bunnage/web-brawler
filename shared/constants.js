@@ -12,6 +12,10 @@ export const DT = 1 / TICK_RATE;
 export const INTERP_MIN_MS = 33;          // floor: 2 snapshot intervals @60Hz
 export const INTERP_MAX_MS = 120;         // ceiling under heavy jitter
 export const INTERP_GAP_MULT = 2;
+// Asymmetric easing: climb fast when jitter spikes (a starved buffer is
+// visible chop), recover slowly (a lingering delay is invisible).
+export const INTERP_EASE_UP = 0.4;        // per snapshot, toward a higher target
+export const INTERP_EASE_DOWN = 0.015;    // per snapshot, toward a lower target
 
 // Client-side prediction (own fighter online).
 export const PREDICTION_SNAP_DIST = 80;      // divergence px that snaps instead of smoothing

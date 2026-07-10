@@ -1045,6 +1045,7 @@ export class Renderer {
       `snap/s   ${s.snapRate.toFixed(0)}`,
       `gap ms   ${s.meanGap.toFixed(1)} / p90 ${s.p90Gap.toFixed(1)}`,
       `interp   ${s.interpDelay.toFixed(0)} ms`,
+      `snap     ${s.snapKB.toFixed(1)} KB · ${s.netKBs.toFixed(0)} KB/s`,
       `pred err ${s.predErrPx.toFixed(1)} px${s.predicting ? '' : ' (off)'}`,
       `pending  ${s.pending}`,
     ];
