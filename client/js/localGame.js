@@ -26,6 +26,7 @@ export class LocalGame {
   start() {
     this.running = true;
     this.lastTime = performance.now();
+    window.__game = this; // debug/E2E hook: inspect live sim state from devtools
     requestAnimationFrame(this._frame);
   }
 
@@ -60,8 +61,6 @@ export class LocalGame {
   }
 
   _handleEvents(events) {
-    for (const ev of events) {
-      if (ev.type === 'hit') this.renderer.flash(ev.victimId);
-    }
+    for (const ev of events) this.renderer.addEvent(ev);
   }
 }

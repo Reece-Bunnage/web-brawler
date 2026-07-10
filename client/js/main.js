@@ -1,4 +1,4 @@
-// Client entry: mode select and wiring (instructions §5).
+// Client entry: mode select and wiring.
 import { InputManager } from './input.js';
 import { Renderer, interpolateSnapshots } from './renderer.js';
 import { LocalGame } from './localGame.js';
@@ -8,9 +8,9 @@ import * as ui from './ui.js';
 const canvas = document.getElementById('game');
 const renderer = new Renderer(canvas);
 const inputManager = new InputManager();
-inputManager.attach();
+inputManager.attach(canvas);
 
-// F1 toggles the hitbox/hurtbox debug overlay.
+// F1 toggles the hitbox debug overlay.
 window.addEventListener('keydown', (e) => {
   if (e.code === 'F1') {
     e.preventDefault();
@@ -20,9 +20,10 @@ window.addEventListener('keydown', (e) => {
 
 let currentGame = null;   // LocalGame instance when playing locally
 let net = null;           // NetClient when online
-let uiMode = 'menu';      // menu | charselect | lobby | match | results
+let uiMode = 'menu';      // menu | lobby | match | results
 let lastLobby = null;     // latest LOBBY_STATE, re-rendered when relevant
 let onlineLoop = null;    // rAF handle for the online render loop
+let selfPos = { x: 640, y: 400 }; // own fighter position for mouse aim
 
 function toMainMenu() {
   currentGame?.stop();
@@ -31,47 +32,46 @@ function toMainMenu() {
   net?.disconnect();
   net = null;
   uiMode = 'menu';
-  ui.showMainMenu({ onLocal: startLocalFlow, onOnline: startOnlineFlow });
+  ui.showMainMenu({ onLocal: startLocalMatch, onOnline: startOnlineFlow });
 }
 
 // --- Local mode ---------------------------------------------------------------
 
-function startLocalFlow() {
-  uiMode = 'charselect';
-  ui.showCharacterSelect({
-    players: [{ label: 'P1' }, { label: 'P2' }],
-    onDone: (characterIds) => startLocalMatch(characterIds),
-  });
-}
-
-function startLocalMatch(characterIds) {
+function startLocalMatch() {
   uiMode = 'match';
   ui.clearUI();
   inputManager.reset();
-  const playerConfigs = [
-    { id: 'p1', characterId: characterIds[0], name: 'P1' },
-    { id: 'p2', characterId: characterIds[1], name: 'P2' },
-  ];
   currentGame = new LocalGame({
     inputManager,
     renderer,
-    playerConfigs,
-    onMatchEnd: (state) => showLocalResults(state, characterIds),
+    playerConfigs: [
+      { id: 'p1', name: 'P1' },
+      { id: 'p2', name: 'P2' },
+    ],
+    onMatchEnd: (state) => showLocalResults(state),
   });
   currentGame.start();
 }
 
-function showLocalResults(state, characterIds) {
+function showLocalResults(state) {
   uiMode = 'results';
-  const standings = Object.values(state.fighters)
-    .slice()
-    .sort((a, b) => b.stocks - a.stocks || a.percent - b.percent)
-    .map((f) => ({ name: f.name, characterId: f.characterId, winner: f.id === state.winnerId }));
   ui.showResults({
-    standings,
-    onRematch: () => startLocalMatch(characterIds),
+    standings: standingsFrom(Object.values(state.fighters), state.winnerId),
+    onRematch: startLocalMatch,
     onMenu: toMainMenu,
   });
+}
+
+function standingsFrom(fighters, winnerId) {
+  return fighters
+    .slice()
+    .sort((a, b) => b.roundWins - a.roundWins)
+    .map((f) => ({
+      name: f.name,
+      color: f.color,
+      roundWins: f.roundWins,
+      winner: f.id === winnerId,
+    }));
 }
 
 // --- Online mode ---------------------------------------------------------------
@@ -111,7 +111,6 @@ function renderLobby() {
     players: lastLobby.players,
     hostId: lastLobby.hostId,
     yourId: net.yourId,
-    onSelectCharacter: (id) => net.selectCharacter(id),
     onReady: (isReady) => net.setReady(isReady),
     onStart: () => net.startMatch(),
   });
@@ -121,25 +120,27 @@ function startOnlineMatch() {
   uiMode = 'match';
   ui.clearUI();
   inputManager.reset();
+  window.__net = net; // debug/E2E hook: inspect snapshots from devtools
   let lastEventTick = -1;
 
   const frame = () => {
     if (uiMode !== 'match') return;
-    // Own inputs use the Player 1 layout online (§12).
-    net.sendInput(inputManager.getInput(0));
+    // Aim with the mouse relative to our own fighter's latest known position.
+    net.sendInput(inputManager.getMouseAimInput(selfPos.x, selfPos.y));
 
     // Play newly arrived events as one-shot cues.
     for (const snap of net.snapshots) {
       if (snap.tick <= lastEventTick) continue;
       lastEventTick = snap.tick;
-      for (const ev of snap.events) {
-        if (ev.type === 'hit') renderer.flash(ev.victimId);
-      }
+      for (const ev of snap.events) renderer.addEvent(ev);
     }
 
     const pair = net.getInterpolationPair();
     if (pair) {
-      renderer.draw(interpolateSnapshots(pair.a, pair.b, pair.t));
+      const state = interpolateSnapshots(pair.a, pair.b, pair.t);
+      const self = state.fighters[net.yourId];
+      if (self) selfPos = { x: self.x, y: self.y };
+      renderer.draw(state);
     }
     onlineLoop = requestAnimationFrame(frame);
   };
@@ -154,13 +155,13 @@ function stopOnlineLoop() {
 function showOnlineResults(msg) {
   uiMode = 'results';
   stopOnlineLoop();
-  const standings = msg.standings.map((s) => ({
-    name: s.name,
-    characterId: s.characterId,
-    winner: s.id === msg.winnerId,
-  }));
   ui.showResults({
-    standings,
+    standings: msg.standings.map((s) => ({
+      name: s.name,
+      color: s.color,
+      roundWins: s.roundWins,
+      winner: s.id === msg.winnerId,
+    })),
     onRematch: null, // online rematch = everyone re-readies in the lobby
     onMenu: () => { uiMode = 'lobby'; renderLobby(); },
     menuLabel: 'Back to Lobby',
@@ -171,4 +172,4 @@ toMainMenu();
 
 // FUTURE: client-side prediction / rollback would hook in around
 // startOnlineMatch — predict own fighter from local inputs, reconcile against
-// authoritative snapshots. Out of scope for v1 (§11).
+// authoritative snapshots. Out of scope for v1.
