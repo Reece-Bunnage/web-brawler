@@ -1,7 +1,7 @@
 {
   "name": "web-brawler",
   "version": "1.0.0",
-  "description": "2-4 player Smash-style platform brawler for the browser",
+  "description": "2-4 player Stick Fight-style arena game for the browser",
   "type": "module",
   "main": "server.js",
   "scripts": {

@@ -1,12 +1,13 @@
-# Web Brawler
+# Stick Fight Web
 
-A 2–4 player Smash-style platform brawler for the browser. One machine runs the
-server, which both serves the game page and runs the authoritative simulation;
-everyone else just opens a URL.
+A 2–4 player Stick Fight-style arena game for the browser. Colored stick
+figures, guns raining from the sky, and last-man-standing rounds. One machine
+runs the server, which both serves the game page and runs the authoritative
+simulation; everyone else just opens a URL.
 
-Rack up your opponents' damage percent — the higher it gets, the farther they
-fly. Knock them past the edge of the screen to take a stock. Last fighter with
-stocks wins.
+Punch or shoot the other sticks until you're the only one left — that's a
+round. First to **5 rounds** wins the match. Guns parachute in every few
+seconds; walk over one to grab it. Watch the bazooka: the blast hurts you too.
 
 ## Prerequisites
 
@@ -15,7 +16,7 @@ stocks wins.
 ## Host a game
 
 ```sh
-git clone <this-repo-url>
+git clone https://github.com/Reece-Bunnage/web-brawler.git
 cd web-brawler
 npm install
 npm start
@@ -40,45 +41,49 @@ share the address with people you trust, and stop the server when you're done.
 - **Local** — two players share one keyboard in one browser. No network
   involved at all (the sim runs in the page), so it's also the quickest way to
   try the game.
-- **Online** — 2–4 players connect to the host's URL. The server runs the one
+- **Online** — 2–4 players connect to the host's URL, ready up in the lobby
+  (colors are auto-assigned), and the host starts. The server runs the one
   true simulation; clients send inputs and render what the server broadcasts.
-
-## Starting an online match
-
-1. Everyone opens the host URL, clicks **Online**, and enters a name.
-2. Pick a character and click **Ready**.
-3. The first person who joined is the host; once 2–4 players are all ready,
-   the host's **Start Match** button lights up.
 
 ## Controls
 
-| Action | Player 1 (and online) | Player 2 (local only) |
+**Local (two players, one keyboard):**
+
+| Action | Player 1 | Player 2 |
 |---|---|---|
 | Move | A / D | ← / → |
-| Up / Down | W / S | ↑ / ↓ |
-| Jump | Space | Enter |
-| Light attack | F | . (period) |
-| Heavy attack | G | / (slash) |
-| Shield | Left Shift | Right Shift |
-| Dodge | C | ' (quote) |
+| Aim up / down | W / S | ↑ / ↓ |
+| Jump / double jump | Space | Enter |
+| Punch / fire | F | . (period) |
+| Drop through platform | S (on a platform) | ↓ (on a platform) |
 
-- Attacks combine with a held direction: neutral, side, up, or down variants.
-- Dodge alone = spot dodge; dodge + direction = roll; dodge in the air = air
-  dodge (once per airtime).
-- Hold down on a thin platform to drop through it.
-- F1 toggles the hitbox debug overlay.
+Aim is 8-way from held direction keys; with nothing held you aim where you
+face.
 
-## The fighters
+**Online:** move with A/D, jump with Space, drop with S — and **aim with the
+mouse, click to fire** (F also works).
 
-- **Ranger** — balanced all-rounder.
-- **Titan** — slow heavyweight; huge, hard-hitting attacks, hard to launch.
-- **Sprite** — fast and floaty with a triple jump; hits softly and flies far.
+- Unarmed you punch; with a gun you shoot. Uzis spray while held, everything
+  else fires per click/press.
+- Touching a gun picks it up (and swaps out the one you had).
+- F1 toggles the debug overlay.
+
+## The arsenal
+
+- **Pistol** — dependable semi-auto.
+- **Uzi** — hold to hose, wide spray.
+- **Shotgun** — five pellets, huge kick (the recoil moves *you* too).
+- **Bazooka** — slow rocket, big boom, no friends.
 
 ## Development notes
 
 - `npm test` runs the simulation test suite; `node test/online.test.js` runs a
   full lobby/match integration test against a real server process.
 - The entire game simulation lives in `/shared` and runs identically in Node
-  (online mode) and the browser (local mode). The server serves `/shared` to
+  (online mode) and the browser (local mode) — including the seeded RNG for
+  weapon drops, so replays are deterministic. The server serves `/shared` to
   the browser directly — no build step, no bundler, only dependency is `ws`.
-- Tunables (physics, knockback, timings) all live in `shared/constants.js`.
+- Tunables (physics, HP, weapon stats, round count) live in
+  `shared/constants.js` and `shared/weapons.js`.
+- This repo previously held a Smash-style brawler; that game is intact in git
+  history (tag/browse commits before the "Stick Fight pivot" series).

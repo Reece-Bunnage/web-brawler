@@ -1,3 +1,9 @@
+> **NOTE (July 2026):** this spec describes the original Smash-style brawler.
+> The repo has since pivoted to a Stick Fight-style game (HP, guns from the
+> sky, last-man-standing rounds) — see README.md. The architecture below
+> (shared pure sim, server-authoritative online play, local 2P mode) still
+> applies; the brawler itself lives on in git history.
+
 # Web Brawler — Build Instructions for Claude Code
 
 A 2–4 player Smash-style platform brawler. The repo lives on GitHub; a single
