@@ -10,10 +10,12 @@ import { STAGE } from '/shared/constants.js';
 // two fields — e.g. W both jumps and aims up). Flat table so a future
 // remapping UI only has to swap this object out.
 export const DEFAULT_BINDINGS = {
-  // Player 1 (WASD cluster). W is jump + aim-up (dual purpose).
+  // Player 1 (WASD cluster). W is jump + aim-up (dual purpose); Space is a
+  // second jump-only key (the comfortable default online, where P1 keys drive).
   KeyA: [0, 'left'],
   KeyD: [0, 'right'],
   KeyW: [[0, 'jump'], [0, 'up']],
+  Space: [0, 'jump'],
   KeyS: [0, 'down'],
   KeyF: [0, 'shoot'],
   ShiftLeft: [0, 'dash'],
