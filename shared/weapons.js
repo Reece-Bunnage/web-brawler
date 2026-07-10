@@ -63,6 +63,19 @@ export const WEAPONS = {
     explosive: true, explosionRadius: 75, explosionDamage: 45, explosionKnockback: 10,
     barrel: 22,
   },
+  sniper: {
+    id: 'sniper', name: 'Sniper',
+    // Hold shoot to charge (a laser sight telegraphs the line), release to fire.
+    // Damage, knockback and velocity scale with charge; a full charge is a
+    // near one-shot that rings you off the edge. `charge`/`chargeFrames` drive
+    // the charge behavior in the sim.
+    auto: false, charge: true, chargeFrames: 45,
+    fireCooldown: 70,
+    damage: 85, knockback: 16, recoil: 5,
+    projectileSpeed: 34, projectileCount: 1, spread: 0,
+    projectileLife: 60, gravityFactor: 0,
+    explosive: false, barrel: 34,
+  },
 };
 
 export const WEAPON_IDS = Object.keys(WEAPONS);

@@ -25,6 +25,13 @@ const CAM_POS_EASE = 0.12;    // per-frame lerp toward the target
 const CAM_ZOOM_EASE = 0.08;
 const CAM_LOOKAHEAD = 6;      // frames of vx projected ahead of each fighter
 
+// Juice tuning.
+const SHAKE_MAX = 26;         // cap on shake magnitude (screen px)
+const SHAKE_DECAY = 0.82;     // per-frame falloff
+const RAGDOLL_GRAVITY = 0.7;
+const RAGDOLL_FRICTION = 0.86;
+const RAGDOLL_LIFE = 150;     // frames before a corpse fades out
+
 // Smash-style camera: frames all living fighters, zooming between "whole
 // level fits" and CAM_MAX_ZOOM, easing toward the target each frame.
 class Camera {
@@ -107,6 +114,11 @@ export class Renderer {
     this.camera = new Camera(canvas.width, canvas.height);
     this._bgCache = new Map();     // level.id → parallax layers
     this._lastLevelIndex = -1;     // camera snaps when the map changes
+    this.shake = 0;                // current screen-shake magnitude
+    this.hitStop = 0;              // frames the game loop should freeze on
+    this.ragdolls = new Map();     // fighterId → client-side corpse physics
+    this._figState = new Map();    // fighterId → { wasAir, squash } for pose juice
+    this._lastPhase = null;        // detects round (re)starts to clear corpses
   }
 
   toggleDebug() {
@@ -117,24 +129,60 @@ export class Renderer {
     return this.camera.worldToScreen(x, y);
   }
 
+  addShake(mag) {
+    this.shake = Math.min(SHAKE_MAX, Math.max(this.shake, mag));
+  }
+
+  // Client-side hit-stop: the game loops freeze the sim/interpolation for a
+  // few frames on big impacts. Purely cosmetic, so it never desyncs online.
+  triggerHitStop(frames) {
+    this.hitStop = Math.max(this.hitStop, frames);
+  }
+
+  spawnRagdoll(ev) {
+    this.ragdolls.set(ev.id, {
+      id: ev.id,
+      color: ev.color ?? '#c9ccd6',
+      x: ev.x,
+      y: ev.y,
+      vx: (ev.vx ?? 0) * 1.1 + (Math.random() - 0.5) * 2,
+      vy: (ev.vy ?? 0) - 3,
+      angle: 0,
+      angVel: ((ev.vx ?? 0) * 0.02) + (Math.random() - 0.5) * 0.3,
+      age: 0,
+      settled: false,
+    });
+  }
+
   // Feed sim events (from local stepGame or arriving snapshots) to spawn
   // one-shot visual effects.
   addEvent(ev) {
     switch (ev.type) {
-      case 'shot':
-        this.effects.push({ type: 'muzzle', x: ev.x, y: ev.y, age: 0, life: 5 });
+      case 'shot': {
+        const charged = ev.charged; // full-charge sniper shot
+        this.effects.push({ type: 'muzzle', x: ev.x, y: ev.y, age: 0, life: charged ? 8 : 5, big: charged });
+        if (charged) this.addShake(9);
         break;
+      }
       case 'punch':
         this.effects.push({ type: 'punch', x: ev.x, y: ev.y, age: 0, life: 7 });
         break;
       case 'hit':
         this.effects.push({ type: 'hitspark', x: ev.x, y: ev.y, age: 0, life: 8 });
+        this.spawnBlood(ev.x, ev.y, 5);
+        this.addShake(4);
         break;
       case 'explosion':
         this.effects.push({ type: 'explosion', x: ev.x, y: ev.y, radius: ev.radius, age: 0, life: 18 });
+        this.addShake(Math.min(SHAKE_MAX, (ev.radius ?? 60) * 0.22));
+        this.triggerHitStop(3);
         break;
       case 'death':
         this.effects.push({ type: 'splat', x: ev.x, y: ev.y, age: 0, life: 40 });
+        this.spawnBlood(ev.x, ev.y, 12);
+        this.spawnRagdoll(ev);
+        this.addShake(14);
+        this.triggerHitStop(4);
         break;
       case 'dash':
         this.effects.push({ type: 'dashTrail', x: ev.x, y: ev.y, dir: ev.dir, age: 0, life: 12 });
@@ -159,18 +207,37 @@ export class Renderer {
     this.camera.update(state, level, levelIndex !== this._lastLevelIndex);
     this._lastLevelIndex = levelIndex;
 
+    // A fresh countdown means a new round — clear last round's corpses/pose state.
+    if (state.phase === 'countdown' && this._lastPhase !== 'countdown') {
+      this.ragdolls.clear();
+      this._figState.clear();
+    }
+    this._lastPhase = state.phase;
+
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     this.drawBackground(level);
 
+    // Screen-shake offset, applied to the world layer only (HUD stays put).
+    let sx = 0, sy = 0;
+    if (this.shake > 0.3) {
+      sx = (Math.random() * 2 - 1) * this.shake;
+      sy = (Math.random() * 2 - 1) * this.shake;
+      this.shake *= SHAKE_DECAY;
+    } else {
+      this.shake = 0;
+    }
+
     // World space: everything the camera looks at.
     ctx.save();
+    ctx.translate(sx, sy);
     this.camera.applyTransform(ctx);
     this.drawStage(level);
     this.drawHazards(level, state.tick ?? 0);
     for (const drop of state.drops ?? []) this.drawDrop(drop, state.tick ?? 0);
+    this.stepAndDrawRagdolls(level);
     for (const fighter of Object.values(state.fighters)) {
-      if (fighter.alive) this.drawFighter(fighter, state.tick ?? 0);
-      else this.drawCorpse(fighter);
+      if (fighter.alive) this.drawFighter(fighter, state.tick ?? 0, level);
+      else if (!this.ragdolls.has(fighter.id)) this.drawCorpse(fighter); // fallback if we missed the death event
     }
     for (const p of state.projectiles ?? []) this.drawProjectile(p);
     this.drawEffects();
@@ -343,10 +410,42 @@ export class Renderer {
 
   // --- Stick figures -------------------------------------------------------
 
-  drawFighter(f, tick) {
+  drawFighter(f, tick, level) {
     const { ctx } = this;
+
+    // Laser sight is drawn in world space, under the figure, before any squash.
+    if (f.weaponId === 'sniper' && level) this.drawLaserSight(f, level);
+
+    // Squash & stretch: airborne stretch along vertical speed, plus a squash
+    // pulse on landing. Volume-preserving scale around the feet.
+    const onGround = f.onGround ?? true;
+    const vy = f.vy ?? 0;
+    const st = this._figState.get(f.id) ?? { wasAir: false, squash: 0 };
+    if (st.wasAir && onGround) {
+      st.squash = 1;
+      this.effects.push({ type: 'dust', x: f.x, y: f.y + FOOT_Y, dir: 0, age: 0, life: 12 });
+    }
+    st.wasAir = !onGround;
+    st.squash = st.squash > 0.02 ? st.squash * 0.8 : 0;
+    this._figState.set(f.id, st);
+
+    let sxScale = 1, syScale = 1;
+    if (st.squash > 0) {
+      syScale = 1 - 0.28 * st.squash;
+      sxScale = 1 + 0.28 * st.squash;
+    } else if (!onGround) {
+      const stretch = Math.min(0.3, Math.abs(vy) / 26);
+      syScale = 1 + stretch;
+      sxScale = 1 - stretch * 0.6;
+    }
+
     ctx.save();
     ctx.translate(f.x, f.y);
+    if (sxScale !== 1 || syScale !== 1) {
+      ctx.translate(0, FOOT_Y);
+      ctx.scale(sxScale, syScale);
+      ctx.translate(0, -FOOT_Y);
+    }
     ctx.strokeStyle = f.color;
     ctx.fillStyle = f.color;
     ctx.lineWidth = 4;
@@ -411,6 +510,115 @@ export class Renderer {
     ctx.translate(hx * 10, NECK_Y + hy * 10);
     ctx.rotate(angle);
     drawGunShape(ctx, weapon.id);
+    ctx.restore();
+  }
+
+  // Sniper laser: a line from the muzzle along the aim, raycast to the first
+  // solid surface, brightening/thickening as the shot charges.
+  drawLaserSight(f, level) {
+    const { ctx } = this;
+    const weapon = WEAPONS.sniper;
+    const ax = f.aimX ?? f.facing ?? 1;
+    const ay = f.aimY ?? 0;
+    const len = Math.hypot(ax, ay) || 1;
+    const dx = ax / len;
+    const dy = ay / len;
+    const ox = f.x + dx * weapon.barrel;
+    const oy = f.y + dy * weapon.barrel;
+
+    const maxDist = 2600;
+    const step = 10;
+    let dist = maxDist;
+    for (let d = step; d <= maxDist; d += step) {
+      const px = ox + dx * d;
+      const py = oy + dy * d;
+      const inRect = (r) => px > r.x && px < r.x + r.w && py > r.y && py < r.y + r.h;
+      if (level.solids.some(inRect)) { dist = d; break; }
+    }
+
+    const charge = Math.min(1, (f.chargeFrames ?? 0) / weapon.chargeFrames);
+    ctx.save();
+    ctx.globalAlpha = 0.35 + 0.5 * charge;
+    ctx.strokeStyle = charge >= 0.99 ? '#ff5a4d' : '#ff8a7a';
+    ctx.lineWidth = 1 + 2 * charge;
+    ctx.beginPath();
+    ctx.moveTo(ox, oy);
+    ctx.lineTo(ox + dx * dist, oy + dy * dist);
+    ctx.stroke();
+    // Charge glow at the muzzle.
+    if (charge > 0) {
+      ctx.globalAlpha = charge;
+      ctx.fillStyle = '#ffd24d';
+      ctx.beginPath();
+      ctx.arc(ox, oy, 2 + 5 * charge, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  spawnBlood(x, y, count) {
+    for (let i = 0; i < count; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = 1 + Math.random() * 3.5;
+      this.effects.push({
+        type: 'blood', x, y,
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp - 1.5,
+        age: 0, life: 22 + Math.random() * 14,
+      });
+    }
+  }
+
+  // Client-side corpse physics: fly from the killing blow, tumble, land on the
+  // level's solids, slide to rest, then fade. Purely cosmetic.
+  stepAndDrawRagdolls(level) {
+    for (const [id, r] of this.ragdolls) {
+      r.age += 1;
+      if (r.age > RAGDOLL_LIFE) { this.ragdolls.delete(id); continue; }
+
+      if (!r.settled) {
+        r.vy = Math.min(r.vy + RAGDOLL_GRAVITY, 18);
+        r.x += r.vx;
+        r.y += r.vy;
+        r.angle += r.angVel;
+
+        // Rest on the first solid whose top the corpse crosses while falling.
+        const foot = r.y + 24;
+        for (const s of level.solids) {
+          if (r.x > s.x && r.x < s.x + s.w && foot >= s.y && foot - r.vy <= s.y + 2 && r.vy >= 0) {
+            r.y = s.y - 24;
+            r.vy = 0;
+            r.vx *= RAGDOLL_FRICTION;
+            r.angVel *= 0.5;
+            if (Math.abs(r.vx) < 0.2) { r.vx = 0; r.settled = true; r.angle = Math.PI / 2 * Math.sign(r.angle || 1); }
+            break;
+          }
+        }
+      }
+
+      this.drawRagdoll(r);
+    }
+  }
+
+  drawRagdoll(r) {
+    const { ctx } = this;
+    const fade = r.age > RAGDOLL_LIFE - 40 ? (RAGDOLL_LIFE - r.age) / 40 : 1;
+    ctx.save();
+    ctx.globalAlpha = 0.85 * fade;
+    ctx.translate(r.x, r.y);
+    ctx.rotate(r.angle);
+    ctx.strokeStyle = r.color;
+    ctx.fillStyle = r.color;
+    ctx.lineWidth = 4;
+    ctx.lineCap = 'round';
+    line(ctx, 0, -18, 0, 10);       // torso
+    line(ctx, 0, 10, -8, 26);       // legs, splayed
+    line(ctx, 0, 10, 9, 24);
+    line(ctx, 0, -14, -11, -4);     // arms, limp
+    line(ctx, 0, -14, 10, -8);
+    ctx.beginPath();
+    ctx.arc(0, -26, HEAD_R - 1, 0, Math.PI * 2);
+    ctx.fill();
     ctx.restore();
   }
 
@@ -532,9 +740,31 @@ export class Renderer {
       const t = e.age / e.life;
       switch (e.type) {
         case 'muzzle': {
+          const r = (e.big ? 11 : 6) * (1 - t) + 2;
           ctx.fillStyle = `rgba(255, 220, 120, ${1 - t})`;
           ctx.beginPath();
-          ctx.arc(e.x, e.y, 6 * (1 - t) + 2, 0, Math.PI * 2);
+          ctx.arc(e.x, e.y, r, 0, Math.PI * 2);
+          ctx.fill();
+          // Spark spokes for extra snap (bigger on a charged shot).
+          ctx.strokeStyle = `rgba(255, 240, 190, ${(1 - t) * 0.8})`;
+          ctx.lineWidth = 1.5;
+          const spokes = e.big ? 6 : 4;
+          for (let i = 0; i < spokes; i++) {
+            const a = (i / spokes) * Math.PI * 2;
+            ctx.beginPath();
+            ctx.moveTo(e.x + Math.cos(a) * r, e.y + Math.sin(a) * r);
+            ctx.lineTo(e.x + Math.cos(a) * (r + (e.big ? 12 : 7)), e.y + Math.sin(a) * (r + (e.big ? 12 : 7)));
+            ctx.stroke();
+          }
+          break;
+        }
+        case 'blood': {
+          e.vy += 0.35; // droplets fall
+          e.x += e.vx;
+          e.y += e.vy;
+          ctx.fillStyle = `rgba(200, 40, 40, ${Math.max(0, 1 - t)})`;
+          ctx.beginPath();
+          ctx.arc(e.x, e.y, 2.4 * (1 - t) + 0.6, 0, Math.PI * 2);
           ctx.fill();
           break;
         }

@@ -79,6 +79,7 @@ function createFighter(cfg, index) {
     jumpsRemaining: AIR_JUMPS,
     weaponId: null,          // null = fists
     fireCooldown: 0,
+    chargeFrames: 0,         // > 0 while charging a charge-weapon (sniper)
     flinchFrames: 0,
     dropThroughTimer: 0,
     dashFrames: 0,           // > 0 while mid-dash
@@ -110,6 +111,7 @@ function resetFightersForRound(state) {
     f.jumpsRemaining = AIR_JUMPS;
     f.weaponId = null;
     f.fireCooldown = 0;
+    f.chargeFrames = 0;
     f.flinchFrames = 0;
     f.dropThroughTimer = 0;
     f.dashFrames = 0;
@@ -207,9 +209,12 @@ function stepFighter(state, fighter, input) {
 
   if (fighter.flinchFrames === 0) {
     applyMovementInput(state, fighter, input, getLevel(state));
+    const weapon = fighter.weaponId ? WEAPONS[fighter.weaponId] : null;
     // Throw takes priority over firing: hurl the held gun on a fresh press.
     if (fighter.weaponId && pressed(input, fighter.prevInput, 'throw')) {
       throwWeapon(state, fighter);
+    } else if (weapon && weapon.charge) {
+      stepChargeWeapon(state, fighter, input, weapon); // hold to charge, release to fire
     } else if (input.shoot) {
       if (fighter.weaponId) tryFire(state, fighter, input);
       else tryPunch(state, fighter, input);
@@ -373,12 +378,54 @@ function tryFire(state, fighter, input) {
   state.events.push({ type: 'shot', id: fighter.id, weaponId: weapon.id, x: muzzleX, y: muzzleY });
 }
 
+// Charge weapons (sniper): accumulate charge while shoot is held, fire on
+// release. Damage, knockback and projectile speed scale with the charge held.
+function stepChargeWeapon(state, fighter, input, weapon) {
+  if (fighter.fireCooldown > 0) return; // still recovering from the last shot
+  if (input.shoot) {
+    fighter.chargeFrames = Math.min(fighter.chargeFrames + 1, weapon.chargeFrames);
+  } else if (fighter.chargeFrames > 0) {
+    fireChargedShot(state, fighter, weapon);
+    fighter.chargeFrames = 0;
+  }
+}
+
+function fireChargedShot(state, fighter, weapon) {
+  const ratio = clamp(fighter.chargeFrames / weapon.chargeFrames, 0, 1);
+  const power = 0.5 + 0.5 * ratio; // a tap still does half; full charge is lethal
+  fighter.fireCooldown = weapon.fireCooldown;
+
+  const angle = Math.atan2(fighter.aimY, fighter.aimX);
+  const speed = weapon.projectileSpeed * (0.7 + 0.3 * ratio);
+  const muzzleX = fighter.x + fighter.aimX * weapon.barrel;
+  const muzzleY = fighter.y + fighter.aimY * weapon.barrel;
+  state.projectiles.push({
+    id: state.nextEntityId++,
+    ownerId: fighter.id,
+    weaponId: weapon.id,
+    x: muzzleX,
+    y: muzzleY,
+    vx: Math.cos(angle) * speed,
+    vy: Math.sin(angle) * speed,
+    life: weapon.projectileLife,
+    power, // scales damage + knockback on hit
+  });
+
+  fighter.vx -= fighter.aimX * weapon.recoil * power;
+  fighter.vy -= fighter.aimY * weapon.recoil * power;
+  state.events.push({
+    type: 'shot', id: fighter.id, weaponId: weapon.id,
+    x: muzzleX, y: muzzleY, charged: ratio >= 0.99,
+  });
+}
+
 // Hurl the held gun as an arcing, spinning projectile. Empties the hands
 // (back to fists) regardless of whether it connects.
 function throwWeapon(state, fighter) {
   const weaponId = fighter.weaponId;
   fighter.weaponId = null;
   fighter.fireCooldown = 0;
+  fighter.chargeFrames = 0;
 
   const spin = (fighter.aimX >= 0 ? 1 : -1) * 0.5;
   state.projectiles.push({
@@ -434,9 +481,10 @@ function stepProjectiles(state) {
           explode(state, p, weapon);
         } else {
           const norm = speed || 1;
-          damageFighter(state, victim, weapon.damage, p.ownerId, {
-            vx: (p.vx / norm) * weapon.knockback,
-            vy: (p.vy / norm) * weapon.knockback,
+          const scale = p.power ?? 1; // charge weapons scale damage + knockback
+          damageFighter(state, victim, Math.round(weapon.damage * scale), p.ownerId, {
+            vx: (p.vx / norm) * weapon.knockback * scale,
+            vy: (p.vy / norm) * weapon.knockback * scale,
           });
         }
         consumed = true;
@@ -526,7 +574,8 @@ function damageFighter(state, victim, damage, attackerId, impulse) {
   victim.vy += impulse.vy;
   victim.onGround = false;
   victim.flinchFrames = HIT_FLINCH_FRAMES;
-  victim.dashFrames = 0; // getting hit interrupts a dash
+  victim.dashFrames = 0;   // getting hit interrupts a dash
+  victim.chargeFrames = 0; // ...and interrupts a charging shot
   state.events.push({
     type: 'hit', victimId: victim.id, attackerId, damage,
     x: victim.x, y: victim.y,
@@ -538,7 +587,12 @@ function killFighter(state, victim, attackerId = null) {
   victim.hp = 0;
   victim.alive = false;
   victim.weaponId = null;
-  state.events.push({ type: 'death', id: victim.id, attackerId, x: victim.x, y: victim.y });
+  victim.chargeFrames = 0;
+  // Carry the death impulse + color on the event so the client can ragdoll the corpse.
+  state.events.push({
+    type: 'death', id: victim.id, attackerId, color: victim.color,
+    x: victim.x, y: victim.y, vx: victim.vx, vy: victim.vy,
+  });
 }
 
 // --- Weapon drops ---------------------------------------------------------------
@@ -591,6 +645,7 @@ function checkPickups(state) {
       // Touching a gun takes it; a held gun is swapped away (vanishes).
       fighter.weaponId = drop.weaponId;
       fighter.fireCooldown = 0;
+      fighter.chargeFrames = 0;
       state.drops.splice(i, 1);
       state.events.push({ type: 'pickup', id: fighter.id, weaponId: drop.weaponId });
       break;

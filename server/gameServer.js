@@ -116,6 +116,8 @@ export class GameServer {
       x: r1(f.x),
       y: r1(f.y),
       vx: r1(f.vx),
+      vy: r1(f.vy),
+      onGround: f.onGround,
       facing: f.facing,
       aimX: Math.round(f.aimX * 100) / 100,
       aimY: Math.round(f.aimY * 100) / 100,
@@ -123,6 +125,7 @@ export class GameServer {
       alive: f.alive,
       roundWins: f.roundWins,
       weaponId: f.weaponId,
+      chargeFrames: f.chargeFrames,
     }));
     const projectiles = this.state.projectiles.map((p) => ({
       id: p.id, weaponId: p.weaponId, x: r1(p.x), y: r1(p.y), vx: r1(p.vx), vy: r1(p.vy),

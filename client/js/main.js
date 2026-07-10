@@ -125,9 +125,20 @@ function startOnlineMatch() {
   inputManager.reset();
   window.__net = net; // debug/E2E hook: inspect snapshots from devtools
   let lastEventTick = -1;
+  let lastRenderState = null;
 
   const frame = () => {
     if (uiMode !== 'match') return;
+
+    // Hit-stop: hold the last frame for a few ticks on big impacts (cosmetic;
+    // the authoritative server never pauses, so this can't desync).
+    if (renderer.hitStop > 0) {
+      renderer.hitStop -= 1;
+      if (lastRenderState) renderer.draw(lastRenderState);
+      onlineLoop = requestAnimationFrame(frame);
+      return;
+    }
+
     // Aim with the mouse relative to our own fighter's on-screen position
     // (the camera moves, so world coords and screen coords differ).
     const selfScreen = renderer.worldToScreen(selfPos.x, selfPos.y);
@@ -145,6 +156,7 @@ function startOnlineMatch() {
       const state = interpolateSnapshots(pair.a, pair.b, pair.t);
       const self = state.fighters[net.yourId];
       if (self) selfPos = { x: self.x, y: self.y };
+      lastRenderState = state;
       renderer.draw(state);
     }
     onlineLoop = requestAnimationFrame(frame);

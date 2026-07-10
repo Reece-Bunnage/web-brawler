@@ -477,6 +477,53 @@ test('grenade is a pickup weapon that detonates on impact', () => {
   assert.ok(!s.projectiles.some((p) => p.weaponId === 'grenade'), 'grenade consumed on detonation');
 });
 
+// --- Sniper (charge weapon) --------------------------------------------------
+
+test('sniper charges while shoot is held and fires on release', () => {
+  assert.ok(WEAPON_IDS.includes('sniper'), 'sniper is in the spawn pool');
+  let s = duelState();
+  arm(s.fighters.p1, 'sniper');
+  s = run(s, 20, () => ({ p1: input({ shoot: true, aimX: -1 }) })); // hold, aim away from p2
+  assert.ok(s.fighters.p1.chargeFrames > 0, 'charge accumulates while held');
+  assert.equal(s.projectiles.length, 0, 'no shot fired while charging');
+
+  s = run(s, 1, () => ({ p1: input({ shoot: false, aimX: -1 }) })); // release
+  assert.equal(s.projectiles.length, 1, 'fires on release');
+  assert.equal(s.fighters.p1.chargeFrames, 0, 'charge resets after firing');
+});
+
+test('a full sniper charge hits far harder than a quick release', () => {
+  const damageAfterHolding = (holdFrames) => {
+    let s = duelState();
+    s.nextSpawnTimer = 100000;
+    arm(s.fighters.p1, 'sniper');
+    s.fighters.p2.x = s.fighters.p1.x + 120;
+    s = run(s, holdFrames, () => ({ p1: input({ shoot: true, aimX: 1 }) }));
+    s = run(s, 1, () => ({ p1: input({ shoot: false, aimX: 1 }) }));
+    s = run(s, 12); // bullet travels into p2
+    return MAX_HP - s.fighters.p2.hp;
+  };
+  const tap = damageAfterHolding(2);
+  const full = damageAfterHolding(60); // past chargeFrames → full charge
+  assert.ok(full > tap, `full charge (${full}) beats a tap (${tap})`);
+  assert.ok(full >= 80, `full charge is near one-shot (${full})`);
+});
+
+test('taking a hit interrupts a sniper charge without firing', () => {
+  let s = duelState();
+  arm(s.fighters.p1, 'sniper');
+  s.fighters.p1.chargeFrames = 30;           // mid-charge
+  s.fighters.p2.x = s.fighters.p1.x + 30;    // within punch range
+  // p1 keeps holding (still charging) while p2 punches it the same frame.
+  s = run(s, 1, () => ({
+    p1: input({ shoot: true, aimX: -1 }),
+    p2: input({ shoot: true, aimX: -1 }),
+  }));
+  assert.ok(s.fighters.p1.hp < MAX_HP, 'p1 got punched');
+  assert.equal(s.fighters.p1.chargeFrames, 0, 'charge was interrupted');
+  assert.equal(s.projectiles.length, 0, 'the interrupted charge did not fire');
+});
+
 // --- Hazards -----------------------------------------------------------------
 
 test('saw blade deals damage + knockback, then respects its cooldown', () => {

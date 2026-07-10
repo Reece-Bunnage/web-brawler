@@ -37,6 +37,16 @@ export class LocalGame {
   _frame(now) {
     if (!this.running) return;
 
+    // Hit-stop: freeze the sim for a few frames on big impacts (cosmetic).
+    if (this.renderer.hitStop > 0) {
+      this.renderer.hitStop -= 1;
+      this.lastTime = now;
+      this.accumulator = 0; // don't bank owed time during the freeze
+      this.renderer.draw(this.state);
+      requestAnimationFrame(this._frame);
+      return;
+    }
+
     this.accumulator = Math.min(this.accumulator + (now - this.lastTime), MAX_ACCUMULATED_MS);
     this.lastTime = now;
 
