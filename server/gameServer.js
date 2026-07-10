@@ -126,6 +126,7 @@ export class GameServer {
     }));
     const projectiles = this.state.projectiles.map((p) => ({
       id: p.id, weaponId: p.weaponId, x: r1(p.x), y: r1(p.y), vx: r1(p.vx), vy: r1(p.vy),
+      kind: p.kind, spin: p.spin,
     }));
     const drops = this.state.drops.map((d) => ({
       id: d.id, weaponId: d.weaponId, x: r1(d.x), y: r1(d.y), landed: d.landed,

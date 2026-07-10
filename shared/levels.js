@@ -3,15 +3,27 @@
 // Level shape:
 // {
 //   id, name,
+//   width, height,              // world size in px (optional; defaults to STAGE view size)
 //   solids:    [ {x,y,w,h} ],   // full-collision ground blocks (land/bonk/side-push)
 //   platforms: [ {x,y,w,h} ],   // thin pass-through platforms (drop through with down)
+//   hazards:   [ ... ],         // optional static hazards (see below)
 //   spawnPoints: [ {x,y} ],     // FEET positions (y = where the hurtbox bottom goes)
 //   dropRange: { min, max },    // x-range where guns fall from the sky
 //   accent,                     // ground fill color
 // }
 //
+// Hazard shapes (all optional; a level with no `hazards` behaves as before):
+//   { type: 'saw',    x, y, r }        // spinning blade: center + radius; contact
+//                                      //   deals damage + knockback radially away.
+//   { type: 'bounce', x, y, w, h }     // pad resting on a surface: `y` is the pad's
+//                                      //   TOP (align with the surface top it sits on);
+//                                      //   walking/landing on it launches you upward.
+//                                      //   `h` is cosmetic thickness only.
+//
 // Geometry rules of thumb (jumpVelocity -12, gravity 0.6): a single jump rises
 // ~120px, jump + air jump ~240px. Keep vertical steps under those.
+
+import { STAGE, BLAST_MARGIN } from './constants.js';
 
 export const LEVELS = [
   {
@@ -96,8 +108,133 @@ export const LEVELS = [
     dropRange: { min: 150, max: 1130 },
     accent: '#3f4a5c',
   },
+  {
+    id: 'canyon',
+    name: 'The Canyon',
+    width: 2560,
+    solids: [
+      { x: 120, y: 560, w: 500, h: 160 },   // left mesa
+      { x: 800, y: 640, w: 960, h: 80 },    // sunken canyon floor
+      { x: 1230, y: 460, w: 100, h: 180 },  // center pillar (wall-jump post)
+      { x: 1940, y: 560, w: 500, h: 160 },  // right mesa
+    ],
+    platforms: [
+      { x: 640, y: 480, w: 140, h: 12 },    // bridges over the side gaps
+      { x: 1780, y: 480, w: 140, h: 12 },
+      { x: 1150, y: 330, w: 260, h: 12 },   // crow's nest above the pillar
+    ],
+    spawnPoints: [
+      { x: 300, y: 560 }, { x: 2260, y: 560 }, { x: 1000, y: 640 }, { x: 1560, y: 640 },
+    ],
+    dropRange: { min: 200, max: 2360 },
+    accent: '#54452f',
+  },
+  {
+    id: 'sawmill',
+    name: 'Sawmill',
+    // Standard-size hazard arena: two floor saws flank a central bounce pad
+    // that launches you to the high perch.
+    solids: [{ x: 120, y: 620, w: 1040, h: 100 }],
+    platforms: [
+      { x: 250, y: 470, w: 200, h: 12 },
+      { x: 830, y: 470, w: 200, h: 12 },
+      { x: 540, y: 340, w: 200, h: 12 }, // high center (reach via bounce pad)
+    ],
+    hazards: [
+      { type: 'saw', x: 470, y: 600, r: 32 },
+      { type: 'saw', x: 810, y: 600, r: 32 },
+      { type: 'bounce', x: 600, y: 620, w: 80, h: 14 },
+    ],
+    spawnPoints: [
+      { x: 200, y: 620 }, { x: 1080, y: 620 }, { x: 340, y: 620 }, { x: 940, y: 620 },
+    ],
+    dropRange: { min: 200, max: 1080 },
+    accent: '#4a4038',
+  },
+  {
+    id: 'foundry',
+    name: 'The Foundry',
+    width: 2200,
+    // Wide industrial floor split by two saw-topped divider walls; side bounce
+    // pads fling you up onto the flanking platforms, a floor saw guards the
+    // sunken middle.
+    solids: [
+      { x: 80, y: 600, w: 520, h: 120 },   // left ground
+      { x: 900, y: 640, w: 400, h: 80 },   // sunken middle
+      { x: 1600, y: 600, w: 520, h: 120 }, // right ground
+      { x: 720, y: 460, w: 60, h: 260 },   // left divider wall
+      { x: 1420, y: 460, w: 60, h: 260 },  // right divider wall
+    ],
+    platforms: [
+      { x: 560, y: 470, w: 180, h: 12 },
+      { x: 1460, y: 470, w: 180, h: 12 },
+      { x: 980, y: 440, w: 240, h: 12 }, // center overpass
+    ],
+    hazards: [
+      { type: 'saw', x: 1100, y: 620, r: 34 }, // sunken-middle gate
+      { type: 'saw', x: 750, y: 430, r: 30 },  // atop left wall
+      { type: 'saw', x: 1450, y: 430, r: 30 }, // atop right wall
+      { type: 'bounce', x: 300, y: 600, w: 90, h: 14 },
+      { type: 'bounce', x: 1810, y: 600, w: 90, h: 14 },
+    ],
+    spawnPoints: [
+      { x: 200, y: 600 }, { x: 2000, y: 600 }, { x: 960, y: 640 }, { x: 1240, y: 640 },
+    ],
+    dropRange: { min: 150, max: 2050 },
+    accent: '#4a4038',
+  },
+  {
+    id: 'gauntlet',
+    name: 'The Gauntlet',
+    width: 2560,
+    // Longest map: a run of ledges across two pits, traversed by bounce pads,
+    // with saws gating the approaches and the high central perch.
+    solids: [
+      { x: 60, y: 600, w: 420, h: 120 },    // left start
+      { x: 700, y: 640, w: 300, h: 80 },    // pit ledge 1
+      { x: 1180, y: 600, w: 240, h: 120 },  // central pillar
+      { x: 1620, y: 640, w: 300, h: 80 },   // pit ledge 2
+      { x: 2100, y: 600, w: 400, h: 120 },  // right end
+    ],
+    platforms: [
+      { x: 500, y: 460, w: 160, h: 12 },
+      { x: 1000, y: 420, w: 180, h: 12 },
+      { x: 1440, y: 420, w: 180, h: 12 },
+      { x: 1940, y: 460, w: 160, h: 12 },
+      { x: 1180, y: 300, w: 240, h: 12 }, // high center perch
+    ],
+    hazards: [
+      { type: 'bounce', x: 780, y: 640, w: 90, h: 14 },
+      { type: 'bounce', x: 1700, y: 640, w: 90, h: 14 },
+      { type: 'bounce', x: 1250, y: 600, w: 100, h: 14 }, // pillar → perch
+      { type: 'saw', x: 600, y: 580, r: 30 },   // over pit 1
+      { type: 'saw', x: 2000, y: 580, r: 30 },  // over pit 2
+      { type: 'saw', x: 1180, y: 570, r: 32 },  // guards the pillar top
+    ],
+    spawnPoints: [
+      { x: 160, y: 600 }, { x: 2400, y: 600 }, { x: 720, y: 640 }, { x: 1830, y: 640 },
+    ],
+    dropRange: { min: 150, max: 2400 },
+    accent: '#3c4a4a',
+  },
 ];
 
 export function getLevel(index) {
   return LEVELS[index] ?? LEVELS[0];
+}
+
+// World size of a level; older levels omit width/height and get the view size.
+export function worldSize(level) {
+  return { width: level.width ?? STAGE.width, height: level.height ?? STAGE.height };
+}
+
+// Kill boundaries sit a fixed margin outside the level's world.
+export function blastBounds(level) {
+  const { width, height } = worldSize(level);
+  return {
+    left: -BLAST_MARGIN.side,
+    right: width + BLAST_MARGIN.side,
+    top: -BLAST_MARGIN.top,
+    bottom: height + BLAST_MARGIN.bottom,
+  };
 }

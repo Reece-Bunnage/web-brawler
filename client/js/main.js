@@ -128,8 +128,10 @@ function startOnlineMatch() {
 
   const frame = () => {
     if (uiMode !== 'match') return;
-    // Aim with the mouse relative to our own fighter's latest known position.
-    net.sendInput(inputManager.getMouseAimInput(selfPos.x, selfPos.y));
+    // Aim with the mouse relative to our own fighter's on-screen position
+    // (the camera moves, so world coords and screen coords differ).
+    const selfScreen = renderer.worldToScreen(selfPos.x, selfPos.y);
+    net.sendInput(inputManager.getMouseAimInput(selfScreen.x, selfScreen.y));
 
     // Play newly arrived events as one-shot cues.
     for (const snap of net.snapshots) {

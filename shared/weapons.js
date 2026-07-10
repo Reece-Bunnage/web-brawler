@@ -53,6 +53,16 @@ export const WEAPONS = {
     explosive: true, explosionRadius: 85, explosionDamage: 55, explosionKnockback: 11,
     barrel: 34,
   },
+  grenade: {
+    id: 'grenade', name: 'Grenades',
+    // Lobbed with a heavy arc; detonates on first contact (fighter or stage).
+    auto: false, fireCooldown: 45,
+    damage: 0, knockback: 0, recoil: 1,
+    projectileSpeed: 12, projectileCount: 1, spread: 0,
+    projectileLife: 200, gravityFactor: 0.5,
+    explosive: true, explosionRadius: 75, explosionDamage: 45, explosionKnockback: 10,
+    barrel: 22,
+  },
 };
 
 export const WEAPON_IDS = Object.keys(WEAPONS);

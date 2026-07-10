@@ -6,17 +6,21 @@
 
 import {
   GRAVITY, TERMINAL_VY, GROUND_ACCEL, GROUND_FRICTION, AIR_ACCEL, AIR_DRAG,
-  MOVE_SPEED, JUMP_VELOCITY, AIR_JUMPS, BLAST,
+  MOVE_SPEED, JUMP_VELOCITY, AIR_JUMPS,
+  DASH_SPEED, DASH_FRAMES, DASH_COOLDOWN, AIR_DASHES,
+  WALL_SLIDE_SPEED, WALL_JUMP_VY, WALL_JUMP_KICK,
   FIGHTER_HURTBOX, MAX_HP, FIGHTER_COLORS, HIT_FLINCH_FRAMES,
   PUNCH_DAMAGE, PUNCH_RANGE, PUNCH_RADIUS, PUNCH_KNOCKBACK, PUNCH_COOLDOWN,
+  SAW_DAMAGE, SAW_KNOCKBACK, HAZARD_HIT_COOLDOWN, BOUNCE_POWER,
+  THROW_SPEED, THROW_DAMAGE, THROW_KNOCKBACK, THROW_LIFE,
   WEAPON_SPAWN_INTERVAL, WEAPON_SPAWN_MAX, WEAPON_DROP_FALL_SPEED, PICKUP_RADIUS,
   ROUND_WINS_TARGET, COUNTDOWN_FRAMES, ROUND_END_LINGER, ENDED_LINGER_FRAMES,
 } from './constants.js';
 import { WEAPONS, WEAPON_IDS } from './weapons.js';
-import { LEVELS } from './levels.js';
+import { LEVELS, blastBounds } from './levels.js';
 
 export const EMPTY_INPUT = Object.freeze({
-  left: false, right: false, down: false, jump: false, shoot: false,
+  left: false, right: false, down: false, jump: false, shoot: false, dash: false, throw: false,
   aimX: 0, aimY: 0,
 });
 
@@ -77,6 +81,13 @@ function createFighter(cfg, index) {
     fireCooldown: 0,
     flinchFrames: 0,
     dropThroughTimer: 0,
+    dashFrames: 0,           // > 0 while mid-dash
+    dashDir: 1,
+    dashCooldown: 0,
+    airDashesRemaining: AIR_DASHES,
+    wallDir: 0,              // -1/1 = pressing into a wall on that side (this frame)
+    hazardCooldown: 0,       // brief hazard immunity after a saw hit
+    bounced: false,          // set by a bounce pad this frame; consumed for the event
     prevInput: { ...EMPTY_INPUT }, // sim-side edge detection
   };
 }
@@ -101,6 +112,12 @@ function resetFightersForRound(state) {
     f.fireCooldown = 0;
     f.flinchFrames = 0;
     f.dropThroughTimer = 0;
+    f.dashFrames = 0;
+    f.dashCooldown = 0;
+    f.airDashesRemaining = AIR_DASHES;
+    f.wallDir = 0;
+    f.hazardCooldown = 0;
+    f.bounced = false;
   });
 }
 
@@ -171,6 +188,7 @@ export function stepGame(state, inputs, dt) {
 
   stepProjectiles(next);
   checkPickups(next);
+  stepHazards(next);
   checkBlastZones(next);
   checkRoundEnd(next);
 
@@ -183,12 +201,16 @@ function stepFighter(state, fighter, input) {
   if (fighter.fireCooldown > 0) fighter.fireCooldown -= 1;
   if (fighter.flinchFrames > 0) fighter.flinchFrames -= 1;
   if (fighter.dropThroughTimer > 0) fighter.dropThroughTimer -= 1;
+  if (fighter.dashCooldown > 0) fighter.dashCooldown -= 1;
 
   updateAim(fighter, input);
 
   if (fighter.flinchFrames === 0) {
-    applyMovementInput(fighter, input, getLevel(state));
-    if (input.shoot) {
+    applyMovementInput(state, fighter, input, getLevel(state));
+    // Throw takes priority over firing: hurl the held gun on a fresh press.
+    if (fighter.weaponId && pressed(input, fighter.prevInput, 'throw')) {
+      throwWeapon(state, fighter);
+    } else if (input.shoot) {
       if (fighter.weaponId) tryFire(state, fighter, input);
       else tryPunch(state, fighter, input);
     }
@@ -210,10 +232,25 @@ function updateAim(fighter, input) {
   }
 }
 
-function applyMovementInput(fighter, input, level) {
+function applyMovementInput(state, fighter, input, level) {
   const dir = (input.right ? 1 : 0) - (input.left ? 1 : 0);
 
-  if (fighter.onGround) {
+  // Dash: a committed burst in the held direction (or facing). One per
+  // cooldown; airborne dashes are limited and refresh on landing.
+  if (pressed(input, fighter.prevInput, 'dash')
+    && fighter.dashCooldown === 0 && fighter.dashFrames === 0
+    && (fighter.onGround || fighter.airDashesRemaining > 0)) {
+    if (!fighter.onGround) fighter.airDashesRemaining -= 1;
+    fighter.dashDir = dir || fighter.facing;
+    fighter.dashFrames = DASH_FRAMES;
+    fighter.dashCooldown = DASH_COOLDOWN;
+    fighter.facing = fighter.dashDir;
+    state.events.push({ type: 'dash', id: fighter.id, x: fighter.x, y: fighter.y, dir: fighter.dashDir });
+  }
+
+  if (fighter.dashFrames > 0) {
+    fighter.vx = fighter.dashDir * DASH_SPEED; // steering is locked mid-dash
+  } else if (fighter.onGround) {
     if (dir !== 0) {
       fighter.vx += dir * GROUND_ACCEL;
       fighter.vx = clamp(fighter.vx, -MOVE_SPEED, MOVE_SPEED);
@@ -232,9 +269,18 @@ function applyMovementInput(fighter, input, level) {
     if (fighter.onGround) {
       fighter.vy = JUMP_VELOCITY;
       fighter.onGround = false;
+      fighter.dashFrames = 0; // jump cancels a dash
+    } else if (fighter.wallDir !== 0) {
+      // Wall jump: free (doesn't spend an air jump), kicks away from the wall.
+      fighter.vy = WALL_JUMP_VY;
+      fighter.vx = -fighter.wallDir * WALL_JUMP_KICK;
+      fighter.facing = -fighter.wallDir;
+      fighter.dashFrames = 0;
+      state.events.push({ type: 'wallJump', id: fighter.id, x: fighter.x, y: fighter.y, dir: -fighter.wallDir });
     } else if (fighter.jumpsRemaining > 0) {
       fighter.vy = JUMP_VELOCITY;
       fighter.jumpsRemaining -= 1;
+      fighter.dashFrames = 0;
     }
   }
 
@@ -247,12 +293,25 @@ function applyMovementInput(fighter, input, level) {
 
 function stepFighterPhysics(state, fighter, input) {
   const level = getLevel(state);
-  if (!fighter.onGround) {
+  if (fighter.dashFrames > 0) {
+    // Dashing: gravity is suspended, the burst is purely horizontal.
+    fighter.dashFrames -= 1;
+    fighter.vy = 0;
+  } else if (!fighter.onGround) {
     fighter.vy = Math.min(fighter.vy + GRAVITY, TERMINAL_VY);
+    // Wall slide: holding into a wall brakes the fall.
+    const dir = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+    if (fighter.wallDir !== 0 && dir === fighter.wallDir && fighter.vy > WALL_SLIDE_SPEED) {
+      fighter.vy = WALL_SLIDE_SPEED;
+    }
   }
   fighter.x += fighter.vx;
   fighter.y += fighter.vy;
   resolveStageCollision(fighter, level);
+  if (fighter.bounced) {
+    fighter.bounced = false;
+    state.events.push({ type: 'bounce', id: fighter.id, x: fighter.x, y: fighter.y });
+  }
   if (fighter.onGround && !isSupported(fighter, level)) fighter.onGround = false;
 }
 
@@ -314,11 +373,40 @@ function tryFire(state, fighter, input) {
   state.events.push({ type: 'shot', id: fighter.id, weaponId: weapon.id, x: muzzleX, y: muzzleY });
 }
 
+// Hurl the held gun as an arcing, spinning projectile. Empties the hands
+// (back to fists) regardless of whether it connects.
+function throwWeapon(state, fighter) {
+  const weaponId = fighter.weaponId;
+  fighter.weaponId = null;
+  fighter.fireCooldown = 0;
+
+  const spin = (fighter.aimX >= 0 ? 1 : -1) * 0.5;
+  state.projectiles.push({
+    id: state.nextEntityId++,
+    ownerId: fighter.id,
+    weaponId,
+    kind: 'thrown',
+    x: fighter.x + fighter.aimX * 22,
+    y: fighter.y + fighter.aimY * 22,
+    vx: fighter.aimX * THROW_SPEED,
+    vy: fighter.aimY * THROW_SPEED - 2, // slight loft
+    life: THROW_LIFE,
+    spin: 0,
+    spinRate: spin,
+  });
+  state.events.push({ type: 'throw', id: fighter.id, weaponId, x: fighter.x, y: fighter.y });
+}
+
 // --- Projectiles ---------------------------------------------------------------
 
 function stepProjectiles(state) {
   const survivors = [];
+  const blast = blastBounds(getLevel(state));
   for (const p of state.projectiles) {
+    if (p.kind === 'thrown') {
+      if (stepThrownWeapon(state, p, blast)) survivors.push(p);
+      continue;
+    }
     const weapon = WEAPONS[p.weaponId];
     p.vy += GRAVITY * weapon.gravityFactor;
     p.life -= 1;
@@ -356,7 +444,7 @@ function stepProjectiles(state) {
       }
     }
 
-    if (!consumed && p.life > 0 && !outOfWorld(p)) survivors.push(p);
+    if (!consumed && p.life > 0 && !outOfWorld(p, blast)) survivors.push(p);
   }
   state.projectiles = survivors;
 }
@@ -382,12 +470,63 @@ function explode(state, p, weapon) {
   }
 }
 
+// A thrown gun: full gravity arc + spin. A fighter hit deals damage + knockback
+// and destroys the gun; hitting the stage or running out of flight time drops it
+// back onto the map as a recoverable weapon. Returns true to keep it flying.
+function stepThrownWeapon(state, p, blast) {
+  p.vy = Math.min(p.vy + GRAVITY, TERMINAL_VY);
+  p.spin += p.spinRate;
+  p.life -= 1;
+
+  const speed = Math.hypot(p.vx, p.vy);
+  const substeps = Math.max(1, Math.ceil(speed / 6));
+  const level = getLevel(state);
+
+  for (let i = 0; i < substeps; i++) {
+    p.x += p.vx / substeps;
+    p.y += p.vy / substeps;
+
+    for (const victim of Object.values(state.fighters)) {
+      if (!victim.alive || victim.id === p.ownerId) continue;
+      if (!pointInFighter(p.x, p.y, victim)) continue;
+      const norm = speed || 1;
+      damageFighter(state, victim, THROW_DAMAGE, p.ownerId, {
+        vx: (p.vx / norm) * THROW_KNOCKBACK,
+        vy: (p.vy / norm) * THROW_KNOCKBACK - 1,
+      });
+      return false; // gun consumed on a hit
+    }
+
+    if (hitsStage(p, level)) {
+      dropThrownWeapon(state, p);
+      return false;
+    }
+  }
+
+  if (outOfWorld(p, blast)) return false;
+  if (p.life <= 0) { dropThrownWeapon(state, p); return false; }
+  return true;
+}
+
+// Return a thrown gun to the map as a drop; stepDrops settles it next tick.
+function dropThrownWeapon(state, p) {
+  state.drops.push({
+    id: state.nextEntityId++,
+    weaponId: p.weaponId,
+    x: p.x,
+    y: p.y,
+    landed: false,
+  });
+  state.events.push({ type: 'weaponLand', weaponId: p.weaponId, x: p.x, y: p.y });
+}
+
 function damageFighter(state, victim, damage, attackerId, impulse) {
   victim.hp -= damage;
   victim.vx += impulse.vx;
   victim.vy += impulse.vy;
   victim.onGround = false;
   victim.flinchFrames = HIT_FLINCH_FRAMES;
+  victim.dashFrames = 0; // getting hit interrupts a dash
   state.events.push({
     type: 'hit', victimId: victim.id, attackerId, damage,
     x: victim.x, y: victim.y,
@@ -439,7 +578,8 @@ function stepDrops(state) {
     }
   }
   // A drop that missed every surface falls into the void and is culled.
-  state.drops = state.drops.filter((d) => d.y <= BLAST.bottom);
+  const blast = blastBounds(level);
+  state.drops = state.drops.filter((d) => d.y <= blast.bottom);
 }
 
 function checkPickups(state) {
@@ -458,13 +598,42 @@ function checkPickups(state) {
   }
 }
 
+// --- Hazards -----------------------------------------------------------------------
+
+// Static level hazards. Saws deal contact damage + radial knockback with a
+// short per-fighter immunity window so a single touch can't drain you instantly
+// (the knockback near an edge is usually what kills). Bounce pads are resolved
+// in resolveStageCollision, not here.
+function stepHazards(state) {
+  const hazards = getLevel(state).hazards;
+  if (!hazards) return;
+  for (const fighter of Object.values(state.fighters)) {
+    if (!fighter.alive) continue;
+    if (fighter.hazardCooldown > 0) { fighter.hazardCooldown -= 1; continue; }
+    for (const h of hazards) {
+      if (h.type !== 'saw') continue;
+      if (!circleOverlapsFighter(h.x, h.y, h.r, fighter)) continue;
+      const dx = fighter.x - h.x;
+      const dy = fighter.y - h.y;
+      const dist = Math.hypot(dx, dy) || 1;
+      damageFighter(state, fighter, SAW_DAMAGE, null, {
+        vx: (dx / dist) * SAW_KNOCKBACK,
+        vy: (dy / dist) * SAW_KNOCKBACK - 2, // slight upward pop
+      });
+      fighter.hazardCooldown = HAZARD_HIT_COOLDOWN;
+      break;
+    }
+  }
+}
+
 // --- Round lifecycle ---------------------------------------------------------------
 
 function checkBlastZones(state) {
+  const blast = blastBounds(getLevel(state));
   for (const fighter of Object.values(state.fighters)) {
     if (!fighter.alive) continue;
-    if (fighter.x < BLAST.left || fighter.x > BLAST.right
-      || fighter.y < BLAST.top || fighter.y > BLAST.bottom) {
+    if (fighter.x < blast.left || fighter.x > blast.right
+      || fighter.y < blast.top || fighter.y > blast.bottom) {
       killFighter(state, fighter);
     }
   }
@@ -537,6 +706,7 @@ function resolveStageCollision(fighter, level) {
   const halfH = FIGHTER_HURTBOX.h / 2;
   const wasFalling = fighter.vy >= 0;
   const prevBottom = fighter.y - fighter.vy + halfH;
+  fighter.wallDir = 0; // only a side collision this frame counts as wall contact
 
   // Solid blocks: land on top; block sides/underside.
   for (const s of level.solids) {
@@ -552,6 +722,8 @@ function resolveStageCollision(fighter, level) {
       const fromLeft = fighter.x < s.x + s.w / 2;
       fighter.x = fromLeft ? s.x - halfW : s.x + s.w + halfW;
       fighter.vx = 0;
+      fighter.wallDir = fromLeft ? 1 : -1; // wall is on this side of the fighter
+      fighter.dashFrames = 0;              // dashing into a wall ends the dash
     }
   }
 
@@ -567,6 +739,28 @@ function resolveStageCollision(fighter, level) {
       }
     }
   }
+
+  // Bounce pads: same top-crossing test as a platform, but instead of landing
+  // the fighter is launched upward (and jumps/air-dashes are refreshed). Runs
+  // after solid/platform resolution so a fighter resting on the surface the pad
+  // sits on (vy just zeroed) still gets flung on contact.
+  if (wasFalling) {
+    for (const h of level.hazards ?? []) {
+      if (h.type !== 'bounce') continue;
+      const overlapsX = fighter.x > h.x && fighter.x < h.x + h.w;
+      const bottom = fighter.y + halfH;
+      if (overlapsX && prevBottom <= h.y + 0.001 && bottom >= h.y) {
+        fighter.y = h.y - halfH;
+        fighter.vy = -BOUNCE_POWER;
+        fighter.onGround = false;
+        fighter.jumpsRemaining = AIR_JUMPS;
+        fighter.airDashesRemaining = AIR_DASHES;
+        fighter.dashFrames = 0;
+        fighter.bounced = true; // caller emits the event
+        break;
+      }
+    }
+  }
 }
 
 function landOn(fighter, surfaceY) {
@@ -574,6 +768,7 @@ function landOn(fighter, surfaceY) {
   fighter.vy = 0;
   fighter.onGround = true;
   fighter.jumpsRemaining = AIR_JUMPS;
+  fighter.airDashesRemaining = AIR_DASHES;
 }
 
 function isSupported(fighter, level) {
@@ -592,8 +787,8 @@ function hitsStage(p, level) {
   return level.solids.some(inRect) || level.platforms.some(inRect);
 }
 
-function outOfWorld(p) {
-  return p.x < BLAST.left || p.x > BLAST.right || p.y < BLAST.top || p.y > BLAST.bottom;
+function outOfWorld(p, blast) {
+  return p.x < blast.left || p.x > blast.right || p.y < blast.top || p.y > blast.bottom;
 }
 
 function pointInFighter(x, y, fighter) {

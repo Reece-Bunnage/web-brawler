@@ -15,6 +15,8 @@ export const DEFAULT_BINDINGS = {
   KeyS: [0, 'down'],
   Space: [0, 'jump'],
   KeyF: [0, 'shoot'],
+  ShiftLeft: [0, 'dash'],
+  KeyQ: [0, 'throw'],
   // Player 2 (arrow cluster)
   ArrowLeft: [1, 'left'],
   ArrowRight: [1, 'right'],
@@ -22,10 +24,12 @@ export const DEFAULT_BINDINGS = {
   ArrowDown: [1, 'down'],
   Enter: [1, 'jump'],
   Period: [1, 'shoot'],
+  Slash: [1, 'dash'],
+  Comma: [1, 'throw'],
 };
 
 function emptyKeys() {
-  return { left: false, right: false, up: false, down: false, jump: false, shoot: false };
+  return { left: false, right: false, up: false, down: false, jump: false, shoot: false, dash: false, throw: false };
 }
 
 export class InputManager {
@@ -67,7 +71,8 @@ export class InputManager {
     this.players[playerIndex][field] = e.type === 'keydown';
   }
 
-  // The canvas is CSS-scaled; map client coords back to stage coords.
+  // The canvas is CSS-scaled; map client coords back to canvas (view) pixels.
+  // With the dynamic camera these are SCREEN coords, not world coords.
   _toWorld(e) {
     const rect = this.canvas.getBoundingClientRect();
     return {
@@ -86,14 +91,18 @@ export class InputManager {
       down: k.down,
       jump: k.jump,
       shoot: k.shoot,
+      dash: k.dash,
+      throw: k.throw,
       aimX: (k.right ? 1 : 0) - (k.left ? 1 : 0),
       aimY: (k.down ? 1 : 0) - (k.up ? 1 : 0),
     };
   }
 
-  // Online mode: P1 movement keys, aim from the mouse relative to the local
-  // fighter's world position, fire with mouse button (or F as fallback).
-  getMouseAimInput(selfX, selfY) {
+  // Online mode: P1 movement keys, aim from the mouse toward/away from the
+  // local fighter's SCREEN position (camera scale is uniform, so a screen-space
+  // direction is the same as the world-space direction), fire with mouse
+  // button (or F as fallback).
+  getMouseAimInput(selfScreenX, selfScreenY) {
     const k = this.players[0];
     return {
       left: k.left,
@@ -101,8 +110,10 @@ export class InputManager {
       down: k.down,
       jump: k.jump,
       shoot: this.mouse.down || k.shoot,
-      aimX: this.mouse.x - selfX,
-      aimY: this.mouse.y - selfY,
+      dash: k.dash,
+      throw: k.throw,
+      aimX: this.mouse.x - selfScreenX,
+      aimY: this.mouse.y - selfScreenY,
     };
   }
 }

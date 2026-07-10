@@ -8,7 +8,7 @@ import {
   ROUND_WINS_TARGET, TICK_RATE,
 } from '/shared/constants.js';
 import { WEAPONS } from '/shared/weapons.js';
-import { getLevel } from '/shared/levels.js';
+import { getLevel, worldSize } from '/shared/levels.js';
 
 const HEAD_R = 8;
 
@@ -17,16 +17,104 @@ const NECK_Y = -14;   // shoulder line, relative to center
 const HIP_Y = 12;
 const FOOT_Y = FIGHTER_HURTBOX.h / 2;
 
+// Camera tuning.
+const CAM_PADDING = 240;      // world px kept around the fighters' bounding box
+const CAM_MAX_ZOOM = 1.25;    // never closer than this
+const CAM_EDGE_MARGIN = 120;  // how far past the world edge the view may show
+const CAM_POS_EASE = 0.12;    // per-frame lerp toward the target
+const CAM_ZOOM_EASE = 0.08;
+const CAM_LOOKAHEAD = 6;      // frames of vx projected ahead of each fighter
+
+// Smash-style camera: frames all living fighters, zooming between "whole
+// level fits" and CAM_MAX_ZOOM, easing toward the target each frame.
+class Camera {
+  constructor(viewW, viewH) {
+    this.viewW = viewW;
+    this.viewH = viewH;
+    this.x = viewW / 2;
+    this.y = viewH / 2;
+    this.zoom = 1;
+  }
+
+  update(state, level, snap = false) {
+    const world = worldSize(level);
+    let targets = Object.values(state.fighters).filter((f) => f.alive);
+    if (targets.length === 0) targets = Object.values(state.fighters);
+
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const f of targets) {
+      const ahead = (f.vx ?? 0) * CAM_LOOKAHEAD;
+      minX = Math.min(minX, f.x, f.x + ahead);
+      maxX = Math.max(maxX, f.x, f.x + ahead);
+      minY = Math.min(minY, f.y);
+      maxY = Math.max(maxY, f.y);
+    }
+    if (!Number.isFinite(minX)) { minX = maxX = world.width / 2; minY = maxY = world.height / 2; }
+
+    const boxW = maxX - minX + CAM_PADDING * 2;
+    const boxH = maxY - minY + CAM_PADDING * 2;
+    // Zoom floor = whole level in frame (capped at 1:1 for view-sized levels).
+    const fitWorld = Math.min(this.viewW / world.width, this.viewH / world.height);
+    const minZoom = Math.min(1, fitWorld);
+    const zoom = clampNum(Math.min(this.viewW / boxW, this.viewH / boxH), minZoom, CAM_MAX_ZOOM);
+
+    // Keep the view inside the world (plus a small margin of void).
+    const cx = clampCenter((minX + maxX) / 2, this.viewW / 2 / zoom, world.width);
+    const cy = clampCenter((minY + maxY) / 2, this.viewH / 2 / zoom, world.height);
+
+    if (snap) {
+      this.x = cx; this.y = cy; this.zoom = zoom;
+    } else {
+      this.x += (cx - this.x) * CAM_POS_EASE;
+      this.y += (cy - this.y) * CAM_POS_EASE;
+      this.zoom += (zoom - this.zoom) * CAM_ZOOM_EASE;
+    }
+  }
+
+  applyTransform(ctx) {
+    ctx.translate(this.viewW / 2, this.viewH / 2);
+    ctx.scale(this.zoom, this.zoom);
+    ctx.translate(-this.x, -this.y);
+  }
+
+  worldToScreen(wx, wy) {
+    return {
+      x: (wx - this.x) * this.zoom + this.viewW / 2,
+      y: (wy - this.y) * this.zoom + this.viewH / 2,
+    };
+  }
+}
+
+function clampNum(v, lo, hi) {
+  return Math.max(lo, Math.min(hi, v));
+}
+
+// Clamp a view center along one axis so the view stays within
+// [-margin, worldExtent + margin]; a view wider than that centers instead.
+function clampCenter(c, halfView, worldExtent) {
+  const lo = -CAM_EDGE_MARGIN + halfView;
+  const hi = worldExtent + CAM_EDGE_MARGIN - halfView;
+  if (lo > hi) return worldExtent / 2;
+  return clampNum(c, lo, hi);
+}
+
 export class Renderer {
   constructor(canvas) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.debug = false; // toggled with F1 (wired in main.js)
     this.effects = [];  // {type, x, y, age, ...}
+    this.camera = new Camera(canvas.width, canvas.height);
+    this._bgCache = new Map();     // level.id → parallax layers
+    this._lastLevelIndex = -1;     // camera snaps when the map changes
   }
 
   toggleDebug() {
     this.debug = !this.debug;
+  }
+
+  worldToScreen(x, y) {
+    return this.camera.worldToScreen(x, y);
   }
 
   // Feed sim events (from local stepGame or arriving snapshots) to spawn
@@ -48,14 +136,37 @@ export class Renderer {
       case 'death':
         this.effects.push({ type: 'splat', x: ev.x, y: ev.y, age: 0, life: 40 });
         break;
+      case 'dash':
+        this.effects.push({ type: 'dashTrail', x: ev.x, y: ev.y, dir: ev.dir, age: 0, life: 12 });
+        break;
+      case 'wallJump':
+        this.effects.push({ type: 'dust', x: ev.x, y: ev.y, dir: ev.dir, age: 0, life: 14 });
+        break;
+      case 'bounce':
+        this.effects.push({ type: 'bounceRing', x: ev.x, y: ev.y, age: 0, life: 14 });
+        break;
+      case 'throw':
+        this.effects.push({ type: 'punch', x: ev.x, y: ev.y, age: 0, life: 6 });
+        break;
     }
   }
 
   draw(state) {
     const { ctx } = this;
-    ctx.clearRect(0, 0, STAGE.width, STAGE.height);
+    const levelIndex = state.levelIndex ?? 0;
+    const level = getLevel(levelIndex);
+    // Snap (don't glide) when the map rotates to a new level.
+    this.camera.update(state, level, levelIndex !== this._lastLevelIndex);
+    this._lastLevelIndex = levelIndex;
 
-    this.drawStage(getLevel(state.levelIndex ?? 0));
+    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    this.drawBackground(level);
+
+    // World space: everything the camera looks at.
+    ctx.save();
+    this.camera.applyTransform(ctx);
+    this.drawStage(level);
+    this.drawHazards(level, state.tick ?? 0);
     for (const drop of state.drops ?? []) this.drawDrop(drop, state.tick ?? 0);
     for (const fighter of Object.values(state.fighters)) {
       if (fighter.alive) this.drawFighter(fighter, state.tick ?? 0);
@@ -64,11 +175,97 @@ export class Renderer {
     for (const p of state.projectiles ?? []) this.drawProjectile(p);
     this.drawEffects();
     if (this.debug) this.drawDebug(state);
-    this.drawHUD(state);
+    ctx.restore();
 
+    // Screen space: HUD and banners are pinned to the view.
+    this.drawHUD(state);
     if (state.phase === 'countdown') this.drawCountdown(state);
     if (state.phase === 'roundEnd') this.drawRoundBanner(state);
     if (state.phase === 'ended') this.drawWinner(state);
+  }
+
+  // Parallax backdrop: a sky gradient plus star and silhouette layers that
+  // track the camera at fractional factors for depth. Layers are generated
+  // once per level from a seeded RNG so every client sees the same skyline.
+  drawBackground(level) {
+    const { ctx, camera } = this;
+    const world = worldSize(level);
+
+    const sky = ctx.createLinearGradient(0, 0, 0, this.canvas.height);
+    sky.addColorStop(0, '#1a1e2e');
+    sky.addColorStop(1, '#0f1119');
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+    for (const layer of this._backgroundLayers(level)) {
+      const f = layer.factor;
+      // A layer at factor f follows camera position AND zoom at strength f,
+      // pivoting on the world center so depth reads correctly while zooming.
+      const z = 1 + (camera.zoom - 1) * f;
+      const cx = world.width / 2 + (camera.x - world.width / 2) * f;
+      const cy = world.height / 2 + (camera.y - world.height / 2) * f;
+      ctx.save();
+      ctx.translate(camera.viewW / 2, camera.viewH / 2);
+      ctx.scale(z, z);
+      ctx.translate(-cx, -cy);
+      for (const s of layer.shapes) {
+        ctx.globalAlpha = s.alpha;
+        ctx.fillStyle = s.color;
+        if (s.r) {
+          ctx.beginPath();
+          ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+          ctx.fill();
+        } else {
+          ctx.fillRect(s.x, s.y, s.w, s.h);
+        }
+      }
+      ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  _backgroundLayers(level) {
+    let layers = this._bgCache.get(level.id);
+    if (layers) return layers;
+
+    const world = worldSize(level);
+    const rng = mulberry32(hashString(level.id));
+    const stars = [];
+    const starCount = Math.round(40 * world.width / 1280);
+    for (let i = 0; i < starCount; i++) {
+      stars.push({
+        x: -200 + rng() * (world.width + 400),
+        y: -150 + rng() * world.height * 0.6,
+        r: 0.8 + rng() * 1.4,
+        alpha: 0.25 + rng() * 0.4,
+        color: '#cdd3ea',
+      });
+    }
+    const silhouettes = (count, minH, maxH, color, alpha) => {
+      const shapes = [];
+      for (let i = 0; i < count; i++) {
+        const w = 80 + rng() * 180;
+        const h = minH + rng() * (maxH - minH);
+        shapes.push({
+          x: -200 + rng() * (world.width + 400 - w),
+          y: world.height - h,
+          w,
+          h: h + 500, // extend below the world so the camera never sees under them
+          color,
+          alpha,
+        });
+      }
+      return shapes;
+    };
+    const far = Math.round(10 * world.width / 1280);
+    const near = Math.round(6 * world.width / 1280);
+    layers = [
+      { factor: 0.12, shapes: stars },
+      { factor: 0.3, shapes: silhouettes(far, 120, 360, mixHex(level.accent, '#12141d', 0.75), 1) },
+      { factor: 0.55, shapes: silhouettes(near, 60, 220, mixHex(level.accent, '#12141d', 0.55), 0.9) },
+    ];
+    this._bgCache.set(level.id, layers);
+    return layers;
   }
 
   drawStage(level) {
@@ -83,6 +280,65 @@ export class Renderer {
       ctx.fillStyle = '#565d7d';
       ctx.fillRect(p.x, p.y, p.w, p.h);
     }
+  }
+
+  drawHazards(level, tick) {
+    const { ctx } = this;
+    for (const h of level.hazards ?? []) {
+      if (h.type === 'saw') this.drawSaw(h, tick);
+      else if (h.type === 'bounce') this.drawBouncePad(h, tick);
+    }
+  }
+
+  drawSaw(h, tick) {
+    const { ctx } = this;
+    ctx.save();
+    ctx.translate(h.x, h.y);
+    ctx.rotate((tick * 0.3) % (Math.PI * 2));
+    // Toothed disc.
+    const teeth = 12;
+    ctx.fillStyle = '#c2c7d6';
+    ctx.beginPath();
+    for (let i = 0; i < teeth; i++) {
+      const a0 = (i / teeth) * Math.PI * 2;
+      const a1 = ((i + 0.5) / teeth) * Math.PI * 2;
+      ctx.lineTo(Math.cos(a0) * h.r, Math.sin(a0) * h.r);
+      ctx.lineTo(Math.cos(a1) * (h.r + 6), Math.sin(a1) * (h.r + 6));
+    }
+    ctx.closePath();
+    ctx.fill();
+    // Hub.
+    ctx.fillStyle = '#7c8298';
+    ctx.beginPath();
+    ctx.arc(0, 0, h.r * 0.45, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#4b5064';
+    ctx.beginPath();
+    ctx.arc(0, 0, h.r * 0.15, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  drawBouncePad(h, tick) {
+    const { ctx } = this;
+    // Springy pad sitting on its surface, top at h.y; gentle idle pulse.
+    const pulse = Math.sin(tick * 0.12) * 1.5;
+    const top = h.y - 4 - pulse;
+    ctx.fillStyle = '#2b3350';
+    ctx.fillRect(h.x, h.y - 2, h.w, h.h + 6);           // base
+    ctx.fillStyle = '#ffb347';
+    ctx.beginPath();
+    ctx.roundRect(h.x, top, h.w, 10, 5);                // bouncy top
+    ctx.fill();
+    // Up-chevrons hint at the launch.
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+    ctx.lineWidth = 2;
+    const cx = h.x + h.w / 2;
+    ctx.beginPath();
+    ctx.moveTo(cx - 8, top + 6);
+    ctx.lineTo(cx, top + 1);
+    ctx.lineTo(cx + 8, top + 6);
+    ctx.stroke();
   }
 
   // --- Stick figures -------------------------------------------------------
@@ -159,12 +415,12 @@ export class Renderer {
   }
 
   drawCorpse(f) {
-    // Fallen stick figure where they died, faded.
+    // Fallen stick figure where they died, faded. Off-view corpses are
+    // clipped by the canvas, so no bounds guard is needed.
     const { ctx } = this;
-    if (f.x < -100 || f.x > STAGE.width + 100 || f.y > STAGE.height + 100) return;
     ctx.save();
     ctx.globalAlpha = 0.45;
-    ctx.translate(f.x, Math.min(f.y + FIGHTER_HURTBOX.h / 2 - 6, FLOOR.y - 6));
+    ctx.translate(f.x, f.y + FIGHTER_HURTBOX.h / 2 - 6);
     ctx.rotate(Math.PI / 2 * (f.facing || 1));
     ctx.strokeStyle = f.color;
     ctx.fillStyle = f.color;
@@ -210,6 +466,34 @@ export class Renderer {
   drawProjectile(p) {
     const { ctx } = this;
     const weapon = WEAPONS[p.weaponId];
+    if (p.kind === 'thrown') {
+      // A tumbling gun.
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.spin ?? 0);
+      ctx.strokeStyle = '#e8e8ec';
+      ctx.fillStyle = '#e8e8ec';
+      ctx.lineWidth = 3;
+      ctx.translate(-8, 0);
+      drawGunShape(ctx, p.weaponId);
+      ctx.restore();
+      return;
+    }
+    if (p.weaponId === 'grenade') {
+      // Lobbed bomb: dark orb + lit fuse spark.
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.fillStyle = '#2c2f3a';
+      ctx.beginPath();
+      ctx.arc(0, 0, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#ffd24d';
+      ctx.beginPath();
+      ctx.arc(3, -6, 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      return;
+    }
     if (weapon.explosive) {
       // Rocket: fat body + flame.
       const angle = Math.atan2(p.vy, p.vx);
@@ -291,6 +575,39 @@ export class Renderer {
             ctx.arc(e.x + Math.cos(a) * d, e.y + Math.sin(a) * d - t * 8, 3.5 * (1 - t) + 1, 0, Math.PI * 2);
             ctx.fill();
           }
+          break;
+        }
+        case 'dashTrail': {
+          // Speed lines trailing opposite the dash direction.
+          ctx.strokeStyle = `rgba(255,255,255,${(1 - t) * 0.6})`;
+          ctx.lineWidth = 2;
+          for (let i = 0; i < 3; i++) {
+            const y = e.y - 14 + i * 14;
+            const len = (26 - i * 6) * (1 - t);
+            ctx.beginPath();
+            ctx.moveTo(e.x - e.dir * 8, y);
+            ctx.lineTo(e.x - e.dir * (8 + len), y);
+            ctx.stroke();
+          }
+          break;
+        }
+        case 'dust': {
+          // Kick-off puffs drifting away from the wall.
+          ctx.fillStyle = `rgba(200,205,225,${(1 - t) * 0.5})`;
+          for (let i = 0; i < 3; i++) {
+            ctx.beginPath();
+            ctx.arc(e.x + e.dir * t * (10 + i * 6), e.y + 16 - i * 10, 3 * (1 - t) + 1, 0, Math.PI * 2);
+            ctx.fill();
+          }
+          break;
+        }
+        case 'bounceRing': {
+          // Expanding launch ring at the pad.
+          ctx.strokeStyle = `rgba(255,179,71,${1 - t})`;
+          ctx.lineWidth = 3 * (1 - t) + 1;
+          ctx.beginPath();
+          ctx.ellipse(e.x, e.y, 10 + t * 34, 5 + t * 12, 0, 0, Math.PI * 2);
+          ctx.stroke();
           break;
         }
       }
@@ -402,6 +719,20 @@ export class Renderer {
     for (const p of state.projectiles ?? []) {
       ctx.strokeRect(p.x - 2, p.y - 2, 4, 4);
     }
+    // Hazard bounds: saw hit-circles and bounce-pad launch lines.
+    ctx.strokeStyle = '#ffaa00';
+    for (const h of getLevel(state.levelIndex ?? 0).hazards ?? []) {
+      if (h.type === 'saw') {
+        ctx.beginPath();
+        ctx.arc(h.x, h.y, h.r, 0, Math.PI * 2);
+        ctx.stroke();
+      } else if (h.type === 'bounce') {
+        ctx.beginPath();
+        ctx.moveTo(h.x, h.y);
+        ctx.lineTo(h.x + h.w, h.y);
+        ctx.stroke();
+      }
+    }
   }
 }
 
@@ -458,6 +789,12 @@ function drawGunShape(ctx, weaponId) {
       ctx.fillRect(-12, -5, 38, 10);
       ctx.fillRect(2, 4, 5, 6);
       break;
+    case 'grenade':
+      ctx.beginPath();
+      ctx.arc(4, 2, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillRect(2, -7, 4, 4); // fuse cap
+      break;
     default:
       ctx.fillRect(0, -2, 14, 4);
   }
@@ -467,4 +804,34 @@ function hpColor(hp) {
   if (hp > 60) return '#6fe26f';
   if (hp > 30) return '#ffd24d';
   return '#ff5a4d';
+}
+
+// --- Background helpers --------------------------------------------------------
+
+function hashString(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function mulberry32(seed) {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6D2B79F5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Blend hexA toward hexB by t (0 → A, 1 → B).
+function mixHex(hexA, hexB, t) {
+  const a = parseInt(hexA.slice(1), 16);
+  const b = parseInt(hexB.slice(1), 16);
+  const ch = (shift) => Math.round(((a >> shift) & 255) + (((b >> shift) & 255) - ((a >> shift) & 255)) * t);
+  return `rgb(${ch(16)}, ${ch(8)}, ${ch(0)})`;
 }

@@ -2,11 +2,14 @@
 // Run with: npm test
 import assert from 'node:assert/strict';
 import { createInitialState, stepGame, EMPTY_INPUT } from '../shared/simulation.js';
-import { WEAPONS } from '../shared/weapons.js';
+import { WEAPONS, WEAPON_IDS } from '../shared/weapons.js';
 import {
   DT, MAX_HP, MOVE_SPEED, AIR_JUMPS, FIGHTER_HURTBOX,
   COUNTDOWN_FRAMES, ROUND_END_LINGER, ROUND_WINS_TARGET,
   WEAPON_SPAWN_INTERVAL, PUNCH_DAMAGE,
+  DASH_FRAMES, DASH_COOLDOWN, AIR_DASHES, WALL_SLIDE_SPEED,
+  SAW_DAMAGE, HAZARD_HIT_COOLDOWN, BOUNCE_POWER, JUMP_VELOCITY,
+  THROW_DAMAGE,
 } from '../shared/constants.js';
 import { LEVELS } from '../shared/levels.js';
 
@@ -377,6 +380,170 @@ test('level choice and rotation are deterministic per seed', () => {
     return sequence.join(',');
   };
   assert.equal(play(), play());
+});
+
+// --- Dash & wall moves --------------------------------------------------------
+
+test('dash bursts past MOVE_SPEED and respects its cooldown', () => {
+  let s = run(newState(), 10);
+  s = run(s, 1, () => ({ p1: input({ right: true, dash: true }) }));
+  assert.ok(Math.abs(s.fighters.p1.vx) > MOVE_SPEED, `dash vx ${s.fighters.p1.vx}`);
+  assert.ok(s.fighters.p1.dashFrames > 0, 'dash state active');
+
+  s = run(s, DASH_FRAMES + 1); // dash plays out (release = fresh edge next press)
+  s = run(s, 1, () => ({ p1: input({ dash: true }) }));
+  assert.equal(s.fighters.p1.dashFrames, 0, 'second dash blocked by cooldown');
+
+  s = run(s, DASH_COOLDOWN); // wait out the cooldown
+  s = run(s, 1, () => ({ p1: input({ dash: true }) }));
+  assert.ok(s.fighters.p1.dashFrames > 0, 'dash available again after cooldown');
+});
+
+test('air dash suspends gravity and is refreshed on landing', () => {
+  let s = run(newState(), 10);
+  s = run(s, 1, () => ({ p1: input({ jump: true }) }));
+  s = run(s, 3);
+  s = run(s, 1, () => ({ p1: input({ right: true, dash: true }) }));
+  const f = s.fighters.p1;
+  assert.ok(f.dashFrames > 0, 'air dash triggered');
+  assert.equal(f.vy, 0, 'gravity suspended mid-dash');
+  assert.equal(f.airDashesRemaining, 0, 'air dash spent');
+  s = run(s, 120); // fall back down and land
+  assert.equal(s.fighters.p1.onGround, true);
+  assert.equal(s.fighters.p1.airDashesRemaining, AIR_DASHES, 'refreshed on landing');
+});
+
+test('holding into a wall slides slowly and wall jump kicks away', () => {
+  let s = newState(1, 1); // Twin Towers: left tower wall at x=160
+  s.nextSpawnTimer = 100000;
+  s.fighters.p1.x = 130;
+  s.fighters.p1.y = 520;
+  s.fighters.p1.vy = 0;
+  s.fighters.p1.onGround = false;
+  s = run(s, 20, () => ({ p1: input({ right: true }) }));
+  assert.equal(s.fighters.p1.wallDir, 1, 'pressing into the wall on the right');
+  assert.ok(s.fighters.p1.vy <= WALL_SLIDE_SPEED + 0.001, `sliding vy ${s.fighters.p1.vy}`);
+
+  s = run(s, 1, () => ({ p1: input({ right: true, jump: true }) }));
+  assert.ok(s.fighters.p1.vx < 0, 'kicked away from the wall');
+  assert.ok(s.fighters.p1.vy < 0, 'jumped upward');
+});
+
+// --- Throwables --------------------------------------------------------------
+
+test('throwing the held gun launches it and empties the hands', () => {
+  let s = duelState();
+  arm(s.fighters.p1, 'pistol');
+  s = run(s, 1, () => ({ p1: input({ throw: true, aimX: -1 }) })); // away from p2
+  assert.equal(s.fighters.p1.weaponId, null, 'hands emptied to fists');
+  const thrown = s.projectiles.find((p) => p.kind === 'thrown');
+  assert.ok(thrown, 'a thrown-gun projectile spawned');
+  assert.ok(thrown.vx < 0, 'thrown in the aim direction');
+  assert.equal(thrown.weaponId, 'pistol', 'keeps its weapon identity');
+});
+
+test('a thrown gun damages and knocks back an enemy, then is consumed', () => {
+  let s = duelState();
+  arm(s.fighters.p1, 'pistol');
+  s.fighters.p2.x = s.fighters.p1.x + 60; // in the throw path
+  s = run(s, 1, () => ({ p1: input({ throw: true, aimX: 1 }) }));
+  s = run(s, 8); // gun travels into p2
+  assert.ok(s.fighters.p2.hp <= MAX_HP - THROW_DAMAGE, `p2 took throw damage (hp ${s.fighters.p2.hp})`);
+  assert.ok(s.fighters.p2.vx > 0, 'knocked along the throw direction');
+  assert.ok(!s.projectiles.some((p) => p.kind === 'thrown'), 'gun consumed on the hit');
+});
+
+test('a thrown gun that misses lands as a recoverable drop', () => {
+  let s = duelState();
+  s.nextSpawnTimer = 100000;
+  arm(s.fighters.p1, 'shotgun');
+  s.fighters.p2.x = 200; // out of the rightward throw path
+  s = run(s, 1, () => ({ p1: input({ throw: true, aimX: 1 }) }));
+  s = run(s, 120); // fly, arc down, hit the floor
+  assert.ok(!s.projectiles.some((p) => p.kind === 'thrown'), 'no longer in flight');
+  assert.ok(s.drops.some((d) => d.weaponId === 'shotgun'), 'became a shotgun drop');
+});
+
+test('grenade is a pickup weapon that detonates on impact', () => {
+  assert.ok(WEAPON_IDS.includes('grenade'), 'grenade is in the spawn pool');
+  let s = duelState();
+  s.nextSpawnTimer = 100000;
+  arm(s.fighters.p1, 'grenade');
+  s.fighters.p2.x = s.fighters.p1.x + 70;
+  s = run(s, 1, () => ({ p1: input({ shoot: true, aimX: 1 }) }));
+  assert.ok(s.projectiles.some((p) => p.weaponId === 'grenade'), 'a grenade is airborne');
+  s = run(s, 30); // arc into p2 and explode
+  assert.ok(s.fighters.p2.hp < MAX_HP, 'grenade explosion damaged p2');
+  assert.ok(!s.projectiles.some((p) => p.weaponId === 'grenade'), 'grenade consumed on detonation');
+});
+
+// --- Hazards -----------------------------------------------------------------
+
+test('saw blade deals damage + knockback, then respects its cooldown', () => {
+  const idx = LEVELS.findIndex((l) => l.id === 'sawmill');
+  let s = newState(1, idx);
+  s.nextSpawnTimer = 100000;
+  const saw = LEVELS[idx].hazards.find((h) => h.type === 'saw');
+  const pin = () => {
+    const f = s.fighters.p1;
+    f.x = saw.x; f.y = saw.y - 11; f.vx = 0; f.vy = 0; // feet resting on the floor, over the saw
+  };
+
+  pin();
+  s = stepGame(s, {}, DT);
+  assert.equal(s.fighters.p1.hp, MAX_HP - SAW_DAMAGE, 'one saw hit lands');
+  assert.ok(s.fighters.p1.vy < 0, 'knocked up off the saw');
+  assert.ok(s.fighters.p1.hazardCooldown > 0, 'immunity window opened');
+
+  pin();
+  s = stepGame(s, {}, DT);
+  assert.equal(s.fighters.p1.hp, MAX_HP - SAW_DAMAGE, 'no re-hit during the cooldown');
+
+  for (let i = 0; i < HAZARD_HIT_COOLDOWN + 3; i++) { pin(); s = stepGame(s, {}, DT); }
+  assert.ok(s.fighters.p1.hp <= MAX_HP - 2 * SAW_DAMAGE, 'saw hits again once the cooldown elapses');
+});
+
+test('bounce pad launches upward, harder than a jump', () => {
+  const idx = LEVELS.findIndex((l) => l.id === 'sawmill');
+  let s = newState(1, idx);
+  s.nextSpawnTimer = 100000;
+  const pad = LEVELS[idx].hazards.find((h) => h.type === 'bounce');
+  s.fighters.p1.x = pad.x + pad.w / 2;
+  s.fighters.p1.y = pad.y - FIGHTER_HURTBOX.h / 2; // feet on the pad top
+
+  s = stepGame(s, {}, DT);
+  assert.equal(s.fighters.p1.vy, -BOUNCE_POWER, 'launched at bounce power');
+  assert.ok(s.events.some((e) => e.type === 'bounce' && e.id === 'p1'), 'bounce event emitted');
+  assert.ok(BOUNCE_POWER > Math.abs(JUMP_VELOCITY), 'bounce out-launches a normal jump');
+});
+
+test('new hazard levels are well-formed and in rotation', () => {
+  for (const id of ['sawmill', 'foundry', 'gauntlet']) {
+    const level = LEVELS.find((l) => l.id === id);
+    assert.ok(level, `${id} exists`);
+    assert.ok(Array.isArray(level.hazards) && level.hazards.length > 0, `${id} has hazards`);
+    assert.equal(level.spawnPoints.length, 4, `${id} seats 4 players`);
+    for (const h of level.hazards) {
+      if (h.type === 'saw') assert.ok(h.r > 0, `${id} saw has a radius`);
+      else if (h.type === 'bounce') assert.ok(h.w > 0, `${id} pad has a width`);
+      else assert.fail(`${id} has unknown hazard type ${h.type}`);
+    }
+  }
+});
+
+test('wider levels extend the blast zones', () => {
+  const canyonIndex = LEVELS.findIndex((l) => l.id === 'canyon');
+  assert.ok(canyonIndex >= 0, 'canyon level exists');
+  let s = newState(1, canyonIndex);
+  s.nextSpawnTimer = 100000;
+  s.fighters.p1.x = 2200; // dead past the old 1580 bound, fine on a 2560 level
+  s.fighters.p1.y = 500;
+  s = stepGame(s, {}, DT);
+  assert.equal(s.fighters.p1.alive, true, 'in bounds on a wide level');
+
+  s.fighters.p1.x = 2900; // past canyon's blast right (2560 + 300)
+  s = stepGame(s, {}, DT);
+  assert.equal(s.fighters.p1.alive, false, 'out of the wide level bounds');
 });
 
 // --- Runner -----------------------------------------------------------------

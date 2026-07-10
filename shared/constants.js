@@ -16,9 +16,22 @@ export const MOVE_SPEED = 5;              // max ground speed
 export const JUMP_VELOCITY = -12;
 export const AIR_JUMPS = 1;               // extra mid-air jumps
 
-// Stage / blast zones (relative to stage coords)
+// Dash: a committed horizontal burst; gravity is suspended while it lasts.
+export const DASH_SPEED = 11;
+export const DASH_FRAMES = 9;
+export const DASH_COOLDOWN = 40;
+export const AIR_DASHES = 1;              // air dashes per airtime (refreshed on landing)
+
+// Wall slide / wall jump (hold a direction into a wall while airborne).
+export const WALL_SLIDE_SPEED = 2.4;      // max fall speed while sliding
+export const WALL_JUMP_VY = -11;
+export const WALL_JUMP_KICK = 7.5;        // horizontal shove away from the wall
+
+// STAGE is the fixed view/canvas resolution. World size is per-level
+// (levels.js `width`/`height`, defaulting to STAGE) and the camera maps
+// world → view. Blast zones sit BLAST_MARGIN outside each level's world.
 export const STAGE = { width: 1280, height: 720 };
-export const BLAST = { left: -300, right: 1580, top: -400, bottom: 1020 };
+export const BLAST_MARGIN = { side: 300, top: 400, bottom: 300 };
 
 // Stage geometry (solids, platforms, spawn points) lives per-level in
 // shared/levels.js; the map rotates every round.
@@ -35,6 +48,20 @@ export const PUNCH_RANGE = 42;            // reach from fighter center
 export const PUNCH_RADIUS = 22;           // hit circle at the fist
 export const PUNCH_KNOCKBACK = 7;
 export const PUNCH_COOLDOWN = 18;         // frames between punches
+
+// Level hazards (static, data-driven per level in levels.js)
+export const SAW_DAMAGE = 18;             // per contact with a saw blade
+export const SAW_KNOCKBACK = 12;          // radial shove away from the saw center
+export const HAZARD_HIT_COOLDOWN = 24;    // frames of hazard immunity after a hit
+export const BOUNCE_POWER = 17;           // launch velocity off a bounce pad (> jump)
+
+// Throwing the held gun (dedicated throw key). The gun becomes an arcing,
+// spinning projectile: a hit sacrifices the weapon, a miss lands it as a
+// recoverable drop.
+export const THROW_SPEED = 15;            // launch speed of a thrown gun
+export const THROW_DAMAGE = 22;           // contact damage of a thrown gun
+export const THROW_KNOCKBACK = 9;         // shove along the throw direction
+export const THROW_LIFE = 120;            // frames a thrown gun flies before it drops
 
 // Weapons — per-gun numbers live in weapons.js; these are global.
 export const WEAPON_SPAWN_INTERVAL = 240; // frames between sky drops (4 s)
