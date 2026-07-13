@@ -25,7 +25,7 @@ export class GameServer {
     this.accumulator = 0;
     this.lastTime = 0;
     this.timer = null;
-
+// meloncord was here
     for (const cfg of playerConfigs) {
       this.inputs[cfg.id] = { ...EMPTY_INPUT };
       this.lastSeq[cfg.id] = -1;
